@@ -1,0 +1,23 @@
+[package]
+name = "cairo-proof-test"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "convert_cairo_proof"
+path = "src/main.rs"
+
+[dependencies]
+# Cairo AIR from stwo-cairo (remote)
+cairo-air = { git = "https://github.com/starkware-libs/stwo-cairo", rev = "6584b8a" }
+stwo-cairo-serialize = { git = "https://github.com/starkware-libs/stwo-cairo", rev = "6584b8a" }
+
+# Stwo (same revision as stwo-cairo uses)
+stwo = { git = "https://github.com/starkware-libs/stwo", rev = "45d0180", default-features = false, features = ["parallel", "prover"] }
+
+# Our gnark witness library
+stwo-gnark = { path = "../../rust" }
+
+# Utilities
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
