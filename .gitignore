@@ -1,0 +1,26 @@
+# Build artifacts
+*.key
+*.r1cs
+*.bin
+*.sol
+
+# Compiled binaries
+stwo-verifier
+
+# Witness files (generated)
+witness*.json
+
+# Rust build artifacts
+rust/target/
+test/*/target/
+
+# Old build directories (if any)
+build*/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
