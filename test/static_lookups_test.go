@@ -1,4 +1,4 @@
-package stwo
+package stwo_test
 
 import (
 	"testing"
@@ -6,23 +6,24 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
+	stwo "github.com/gnark-stwo/stwo"
 )
 
 // TestStaticLookupsCircuit tests the full circuit with the static_lookups example.
 // This example uses LogUp for range checks.
 func TestStaticLookupsCircuit(t *testing.T) {
 	// Load witness data
-	cfg, err := LoadCircuitConfig("/tmp/witness_out/circuit_config_lookups.json")
+	cfg, err := stwo.LoadCircuitConfig("/tmp/witness_out/circuit_config_lookups.json")
 	if err != nil {
 		t.Skipf("No circuit config: %v", err)
 	}
 
-	pw, err := LoadProofWitness("/tmp/witness_out/proof_witness_lookups.json")
+	pw, err := stwo.LoadProofWitness("/tmp/witness_out/proof_witness_lookups.json")
 	if err != nil {
 		t.Fatalf("Failed to load proof witness: %v", err)
 	}
 
-	pi, err := LoadPublicInputs("/tmp/witness_out/public_inputs_lookups.json")
+	pi, err := stwo.LoadPublicInputs("/tmp/witness_out/public_inputs_lookups.json")
 	if err != nil {
 		t.Fatalf("Failed to load public inputs: %v", err)
 	}
@@ -33,7 +34,7 @@ func TestStaticLookupsCircuit(t *testing.T) {
 	t.Logf("AIR constraints: %v", cfg.AIRConstraints)
 
 	// Create circuit placeholder
-	circuit := CreatePlaceholderFromConfig(cfg)
+	circuit := stwo.CreatePlaceholderFromConfig(cfg)
 
 	// Compile
 	t.Log("Compiling circuit...")
@@ -44,7 +45,7 @@ func TestStaticLookupsCircuit(t *testing.T) {
 	t.Logf("Compiled with %d constraints", ccs.GetNbConstraints())
 
 	// Build witness
-	assignment, err := BuildAssignmentFromSplit(cfg, pw, pi)
+	assignment, err := stwo.BuildAssignmentFromSplit(cfg, pw, pi)
 	if err != nil {
 		t.Fatalf("Failed to build assignment: %v", err)
 	}

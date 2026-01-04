@@ -1,7 +1,9 @@
-package stwo
+package stwo_test
 
 import (
 	"testing"
+
+	stwo "github.com/gnark-stwo/stwo"
 )
 
 func TestParseSimpleAirCircuitDef(t *testing.T) {
@@ -53,7 +55,7 @@ func TestParseSimpleAirCircuitDef(t *testing.T) {
   "composition_log_degree_bound": 5
 }`)
 
-	def, err := ParseCircuitDefinition(jsonData)
+	def, err := stwo.ParseCircuitDefinition(jsonData)
 	if err != nil {
 		t.Fatalf("Failed to parse circuit definition: %v", err)
 	}
@@ -139,7 +141,7 @@ func TestParseStaticLookupsCircuitDef(t *testing.T) {
   "composition_log_degree_bound": 5
 }`)
 
-	def, err := ParseCircuitDefinition(jsonData)
+	def, err := stwo.ParseCircuitDefinition(jsonData)
 	if err != nil {
 		t.Fatalf("Failed to parse circuit definition: %v", err)
 	}

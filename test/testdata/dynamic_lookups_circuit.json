@@ -1,0 +1,133 @@
+{
+  "name": "dynamic_lookups",
+  "components": [
+    {
+      "name": "dynamic_lookups",
+      "log_size": 4,
+      "trees": {
+        "num_trees": 2,
+        "column_log_sizes": [
+          [],
+          [
+            4,
+            4
+          ]
+        ],
+        "preprocessed_column_indices": []
+      },
+      "mask": {
+        "samples": [
+          [],
+          [
+            {
+              "col_idx": 0,
+              "row_offset": 0
+            },
+            {
+              "col_idx": 1,
+              "row_offset": 0
+            }
+          ]
+        ]
+      },
+      "relations": [],
+      "constraints": [],
+      "logup": {
+        "interaction_tree": 2,
+        "fractions": [
+          {
+            "numerator": {
+              "type": "ext_const",
+              "values": [
+                1,
+                0,
+                0,
+                0
+              ]
+            },
+            "denominator": {
+              "type": "ext_sub",
+              "left": {
+                "type": "ext_mul",
+                "left": {
+                  "type": "ext_const",
+                  "values": [
+                    1,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "right": {
+                  "type": "col",
+                  "tree_idx": 1,
+                  "col_idx": 0,
+                  "row_off": 0
+                }
+              },
+              "right": {
+                "type": "ext_const",
+                "values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ]
+              }
+            }
+          },
+          {
+            "numerator": {
+              "type": "ext_neg",
+              "child": {
+                "type": "ext_const",
+                "values": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            },
+            "denominator": {
+              "type": "ext_sub",
+              "left": {
+                "type": "ext_mul",
+                "left": {
+                  "type": "ext_const",
+                  "values": [
+                    1,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "right": {
+                  "type": "col",
+                  "tree_idx": 1,
+                  "col_idx": 1,
+                  "row_off": 0
+                }
+              },
+              "right": {
+                "type": "ext_const",
+                "values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ]
+              }
+            }
+          }
+        ],
+        "finalize_mode": "batched",
+        "batch_sizes": [
+          0,
+          0
+        ]
+      }
+    }
+  ],
+  "composition_log_degree_bound": 5
+}

@@ -1,0 +1,123 @@
+{
+  "config": {
+    "pow_bits": 10,
+    "log_blowup_factor": 1,
+    "log_last_layer_deg": 0,
+    "num_queries": 3
+  },
+  "column_log_sizes": [
+    [],
+    [
+      4,
+      4,
+      4
+    ],
+    [
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4
+    ]
+  ],
+  "structure": {
+    "num_commitments": 3,
+    "sampled_values_shape": [
+      [],
+      [
+        1,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    ],
+    "decommitment_hash_sizes": [
+      3,
+      15,
+      15
+    ],
+    "decommitment_column_sizes": [
+      0,
+      0,
+      0
+    ],
+    "queried_values_sizes": [
+      0,
+      9,
+      24
+    ],
+    "fri_structure": {
+      "first_layer_eval_count": 3,
+      "first_layer_hash_witness_count": 15,
+      "first_layer_column_witness_count": 0,
+      "inner_layers": [
+        {
+          "eval_count": 3,
+          "hash_witness_count": 12,
+          "column_witness_count": 0
+        },
+        {
+          "eval_count": 3,
+          "hash_witness_count": 9,
+          "column_witness_count": 0
+        },
+        {
+          "eval_count": 3,
+          "hash_witness_count": 6,
+          "column_witness_count": 0
+        }
+      ],
+      "last_layer_poly_degree": 1
+    }
+  },
+  "air_constraints": {
+    "constraints": [
+      {
+        "op": "sub",
+        "left": {
+          "op": "add",
+          "left": {
+            "op": "mul",
+            "left": {
+              "op": "col",
+              "tree_idx": 1,
+              "col_idx": 0,
+              "row_off": 0
+            },
+            "right": {
+              "op": "col",
+              "tree_idx": 1,
+              "col_idx": 1,
+              "row_off": 0
+            }
+          },
+          "right": {
+            "op": "col",
+            "tree_idx": 1,
+            "col_idx": 0,
+            "row_off": 0
+          }
+        },
+        "right": {
+          "op": "col",
+          "tree_idx": 1,
+          "col_idx": 2,
+          "row_off": 0
+        }
+      }
+    ],
+    "composition_log_degree_bound": 5
+  }
+}

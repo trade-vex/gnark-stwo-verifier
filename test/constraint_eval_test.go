@@ -1,4 +1,4 @@
-package stwo
+package stwo_test
 
 import (
 	"math/big"
@@ -7,6 +7,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
+	stwo "github.com/gnark-stwo/stwo"
 	"github.com/gnark-stwo/stwo/mersenne31"
 )
 
@@ -21,7 +22,7 @@ type TestConstraintExprCircuit struct {
 	Expected [4]frontend.Variable `gnark:",public"`
 
 	// The constraint expression structure (not a circuit variable)
-	Constraint *ConstraintExpr `gnark:"-"`
+	Constraint *stwo.ConstraintExpr `gnark:"-"`
 }
 
 func (c *TestConstraintExprCircuit) Define(api frontend.API) error {
@@ -78,7 +79,7 @@ func (c *TestConstraintExprCircuit) Define(api frontend.API) error {
 	}
 
 	// Create evaluator
-	evaluator := NewConstraintEvaluator(api, m31Chip)
+	evaluator := stwo.NewConstraintEvaluator(api, m31Chip)
 
 	// Evaluate the constraint expression
 	result := evaluator.EvaluateExpr(c.Constraint, sampledValues)
@@ -105,16 +106,16 @@ func TestConstraintExprEvaluator(t *testing.T) {
 	// col[1,1] = (7, 0, 0, 0)
 	// Expected: (12, 0, 0, 0)
 
-	constraint := &ConstraintExpr{
-		Op: OpAdd,
-		Left: &ConstraintExpr{
-			Op:      OpCol,
+	constraint := &stwo.ConstraintExpr{
+		Op: stwo.OpAdd,
+		Left: &stwo.ConstraintExpr{
+			Op:      stwo.OpCol,
 			TreeIdx: 1,
 			ColIdx:  0,
 			RowOff:  0,
 		},
-		Right: &ConstraintExpr{
-			Op:      OpCol,
+		Right: &stwo.ConstraintExpr{
+			Op:      stwo.OpCol,
 			TreeIdx: 1,
 			ColIdx:  1,
 			RowOff:  0,
@@ -166,16 +167,16 @@ func TestConstraintExprMul(t *testing.T) {
 	// col[1,1] = (4, 0, 0, 0)
 	// Expected: (12, 0, 0, 0) since (3+0i+0u+0iu) * (4+0i+0u+0iu) = 12
 
-	constraint := &ConstraintExpr{
-		Op: OpMul,
-		Left: &ConstraintExpr{
-			Op:      OpCol,
+	constraint := &stwo.ConstraintExpr{
+		Op: stwo.OpMul,
+		Left: &stwo.ConstraintExpr{
+			Op:      stwo.OpCol,
 			TreeIdx: 1,
 			ColIdx:  0,
 			RowOff:  0,
 		},
-		Right: &ConstraintExpr{
-			Op:      OpCol,
+		Right: &stwo.ConstraintExpr{
+			Op:      stwo.OpCol,
 			TreeIdx: 1,
 			ColIdx:  1,
 			RowOff:  0,
@@ -218,16 +219,16 @@ func TestConstraintExprSubNeg(t *testing.T) {
 	// col[1,1] = (3, 0, 0, 0)
 	// Expected: (7, 0, 0, 0)
 
-	constraint := &ConstraintExpr{
-		Op: OpSub,
-		Left: &ConstraintExpr{
-			Op:      OpCol,
+	constraint := &stwo.ConstraintExpr{
+		Op: stwo.OpSub,
+		Left: &stwo.ConstraintExpr{
+			Op:      stwo.OpCol,
 			TreeIdx: 1,
 			ColIdx:  0,
 			RowOff:  0,
 		},
-		Right: &ConstraintExpr{
-			Op:      OpCol,
+		Right: &stwo.ConstraintExpr{
+			Op:      stwo.OpCol,
 			TreeIdx: 1,
 			ColIdx:  1,
 			RowOff:  0,
@@ -269,16 +270,16 @@ func TestConstraintExprConst(t *testing.T) {
 	// col[1,0] = (7, 0, 0, 0)
 	// Expected: (12, 0, 0, 0)
 
-	constraint := &ConstraintExpr{
-		Op: OpAdd,
-		Left: &ConstraintExpr{
-			Op:      OpCol,
+	constraint := &stwo.ConstraintExpr{
+		Op: stwo.OpAdd,
+		Left: &stwo.ConstraintExpr{
+			Op:      stwo.OpCol,
 			TreeIdx: 1,
 			ColIdx:  0,
 			RowOff:  0,
 		},
-		Right: &ConstraintExpr{
-			Op:       OpConst,
+		Right: &stwo.ConstraintExpr{
+			Op:       stwo.OpConst,
 			ConstVal: [4]uint32{5, 0, 0, 0},
 		},
 	}
@@ -320,33 +321,33 @@ func TestConstraintExprComplex(t *testing.T) {
 	// (5 * 3) + (5 - 3) = 15 + 2 = 17
 	// Expected: (17, 0, 0, 0)
 
-	constraint := &ConstraintExpr{
-		Op: OpAdd,
-		Left: &ConstraintExpr{
-			Op: OpMul,
-			Left: &ConstraintExpr{
-				Op:      OpCol,
+	constraint := &stwo.ConstraintExpr{
+		Op: stwo.OpAdd,
+		Left: &stwo.ConstraintExpr{
+			Op: stwo.OpMul,
+			Left: &stwo.ConstraintExpr{
+				Op:      stwo.OpCol,
 				TreeIdx: 1,
 				ColIdx:  0,
 				RowOff:  0,
 			},
-			Right: &ConstraintExpr{
-				Op:      OpCol,
+			Right: &stwo.ConstraintExpr{
+				Op:      stwo.OpCol,
 				TreeIdx: 1,
 				ColIdx:  1,
 				RowOff:  0,
 			},
 		},
-		Right: &ConstraintExpr{
-			Op: OpSub,
-			Left: &ConstraintExpr{
-				Op:      OpCol,
+		Right: &stwo.ConstraintExpr{
+			Op: stwo.OpSub,
+			Left: &stwo.ConstraintExpr{
+				Op:      stwo.OpCol,
 				TreeIdx: 1,
 				ColIdx:  0,
 				RowOff:  0,
 			},
-			Right: &ConstraintExpr{
-				Op:      OpCol,
+			Right: &stwo.ConstraintExpr{
+				Op:      stwo.OpCol,
 				TreeIdx: 1,
 				ColIdx:  1,
 				RowOff:  0,

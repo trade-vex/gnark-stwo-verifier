@@ -1,0 +1,79 @@
+{
+  "name": "simple_air",
+  "components": [
+    {
+      "name": "simple_air",
+      "log_size": 4,
+      "trees": {
+        "num_trees": 2,
+        "column_log_sizes": [
+          [],
+          [
+            4,
+            4,
+            4
+          ]
+        ],
+        "preprocessed_column_indices": []
+      },
+      "mask": {
+        "samples": [
+          [],
+          [
+            {
+              "col_idx": 0,
+              "row_offset": 0
+            },
+            {
+              "col_idx": 1,
+              "row_offset": 0
+            },
+            {
+              "col_idx": 2,
+              "row_offset": 0
+            }
+          ]
+        ]
+      },
+      "relations": [],
+      "constraints": [
+        {
+          "expr": {
+            "type": "sub",
+            "left": {
+              "type": "add",
+              "left": {
+                "type": "mul",
+                "left": {
+                  "type": "col",
+                  "tree_idx": 1,
+                  "col_idx": 0,
+                  "row_off": 0
+                },
+                "right": {
+                  "type": "col",
+                  "tree_idx": 1,
+                  "col_idx": 1,
+                  "row_off": 0
+                }
+              },
+              "right": {
+                "type": "col",
+                "tree_idx": 1,
+                "col_idx": 0,
+                "row_off": 0
+              }
+            },
+            "right": {
+              "type": "col",
+              "tree_idx": 1,
+              "col_idx": 2,
+              "row_off": 0
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "composition_log_degree_bound": 5
+}

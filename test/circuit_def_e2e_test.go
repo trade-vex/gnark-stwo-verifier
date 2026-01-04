@@ -1,4 +1,4 @@
-package stwo
+package stwo_test
 
 import (
 	"math/big"
@@ -7,6 +7,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
+	stwo "github.com/gnark-stwo/stwo"
 	"github.com/gnark-stwo/stwo/mersenne31"
 )
 
@@ -21,7 +22,7 @@ type CircuitDefE2ECircuit struct {
 	Expected [4]frontend.Variable `gnark:",public"`
 
 	// The circuit definition (not a circuit variable)
-	CircuitDef *CircuitDefinition `gnark:"-"`
+	CircuitDef *stwo.CircuitDefinition `gnark:"-"`
 }
 
 func (c *CircuitDefE2ECircuit) Define(api frontend.API) error {
@@ -77,7 +78,7 @@ func (c *CircuitDefE2ECircuit) Define(api frontend.API) error {
 	}
 
 	// Create circuit definition evaluator
-	evaluator := NewCircuitDefEvaluator(api, m31Chip, c.CircuitDef)
+	evaluator := stwo.NewCircuitDefEvaluator(api, m31Chip, c.CircuitDef)
 
 	// No preprocessed columns for simple AIR
 	preprocessed := make(map[string]mersenne31.QM31Variable)
@@ -105,7 +106,7 @@ func (c *CircuitDefE2ECircuit) Define(api frontend.API) error {
 
 func TestCircuitDefE2ESimpleAir(t *testing.T) {
 	// Load the circuit definition
-	circuitDef, err := LoadCircuitDefinition("testdata/simple_air_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/simple_air_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestCircuitDefE2ESimpleAir(t *testing.T) {
 
 func TestCircuitDefE2ESimpleAirNonZero(t *testing.T) {
 	// Test that an invalid trace produces a non-zero constraint evaluation
-	circuitDef, err := LoadCircuitDefinition("testdata/simple_air_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/simple_air_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestCircuitDefE2ESimpleAirNonZero(t *testing.T) {
 
 	col0 := uint32(5)
 	col1 := uint32(3)
-	col2 := uint32(10)                    // Wrong value!
+	col2 := uint32(10)                  // Wrong value!
 	expected := col0*col1 + col0 - col2 // = 10
 
 	witness := &CircuitDefE2ECircuit{
@@ -211,14 +212,14 @@ func TestCircuitDefE2EWithProofWitness(t *testing.T) {
 	// This test loads both the circuit definition and the actual proof witness
 	// and verifies constraint evaluation matches.
 
-	circuitDef, err := LoadCircuitDefinition("testdata/simple_air_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/simple_air_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
 	t.Logf("Loaded circuit definition: %s with %d components", circuitDef.Name, len(circuitDef.Components))
 
 	// Load the proof witness to get actual sampled values
-	proofWitness, err := LoadProofWitness("testdata/proof_witness.json")
+	proofWitness, err := stwo.LoadProofWitness("testdata/proof_witness.json")
 	if err != nil {
 		t.Fatalf("Failed to load proof witness: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestCircuitDefE2EWithProofWitness(t *testing.T) {
 
 func TestCircuitDefE2EStaticLookups(t *testing.T) {
 	// Load the circuit definition for static lookups
-	circuitDef, err := LoadCircuitDefinition("testdata/static_lookups_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/static_lookups_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
@@ -307,7 +308,7 @@ type StaticLookupsE2ECircuit struct {
 	MultiplicityCol [4]frontend.Variable `gnark:",public"`
 
 	// The circuit definition (not a circuit variable)
-	CircuitDef *CircuitDefinition `gnark:"-"`
+	CircuitDef *stwo.CircuitDefinition `gnark:"-"`
 }
 
 func (c *StaticLookupsE2ECircuit) Define(api frontend.API) error {
@@ -352,7 +353,7 @@ func (c *StaticLookupsE2ECircuit) Define(api frontend.API) error {
 	}
 
 	// Create evaluator
-	evaluator := NewCircuitDefEvaluator(api, m31Chip, c.CircuitDef)
+	evaluator := stwo.NewCircuitDefEvaluator(api, m31Chip, c.CircuitDef)
 
 	// Evaluate ALL LogUp fractions to verify the circuit compiles
 	logup := c.CircuitDef.Components[0].Logup
@@ -375,7 +376,7 @@ func (c *StaticLookupsE2ECircuit) Define(api frontend.API) error {
 
 func TestCircuitDefE2EStaticLookupsEval(t *testing.T) {
 	// Load the circuit definition
-	circuitDef, err := LoadCircuitDefinition("testdata/static_lookups_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/static_lookups_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
@@ -416,12 +417,12 @@ func TestCircuitDefE2EStaticLookupsEval(t *testing.T) {
 
 func TestCircuitDefE2EStaticLookupsWithProofWitness(t *testing.T) {
 	// Load both circuit definition and actual proof witness
-	circuitDef, err := LoadCircuitDefinition("testdata/static_lookups_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/static_lookups_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
 
-	proofWitness, err := LoadProofWitness("testdata/static_lookups/proof_witness.json")
+	proofWitness, err := stwo.LoadProofWitness("testdata/static_lookups/proof_witness.json")
 	if err != nil {
 		t.Fatalf("Failed to load proof witness: %v", err)
 	}
@@ -484,7 +485,7 @@ func TestCircuitDefE2EStaticLookupsWithProofWitness(t *testing.T) {
 
 func TestCircuitDefE2EDynamicLookups(t *testing.T) {
 	// Load the circuit definition for dynamic lookups
-	circuitDef, err := LoadCircuitDefinition("testdata/dynamic_lookups_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/dynamic_lookups_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
@@ -529,7 +530,7 @@ type DynamicLookupsE2ECircuit struct {
 	ColB [4]frontend.Variable `gnark:",public"`
 
 	// The circuit definition (not a circuit variable)
-	CircuitDef *CircuitDefinition `gnark:"-"`
+	CircuitDef *stwo.CircuitDefinition `gnark:"-"`
 }
 
 func (c *DynamicLookupsE2ECircuit) Define(api frontend.API) error {
@@ -569,7 +570,7 @@ func (c *DynamicLookupsE2ECircuit) Define(api frontend.API) error {
 	preprocessed := map[string]mersenne31.QM31Variable{}
 
 	// Create evaluator
-	evaluator := NewCircuitDefEvaluator(api, m31Chip, c.CircuitDef)
+	evaluator := stwo.NewCircuitDefEvaluator(api, m31Chip, c.CircuitDef)
 
 	// Evaluate ALL LogUp fractions
 	logup := c.CircuitDef.Components[0].Logup
@@ -591,7 +592,7 @@ func (c *DynamicLookupsE2ECircuit) Define(api frontend.API) error {
 
 func TestCircuitDefE2EDynamicLookupsEval(t *testing.T) {
 	// Load the circuit definition
-	circuitDef, err := LoadCircuitDefinition("testdata/dynamic_lookups_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/dynamic_lookups_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
@@ -630,12 +631,12 @@ func TestCircuitDefE2EDynamicLookupsEval(t *testing.T) {
 
 func TestCircuitDefE2EDynamicLookupsWithProofWitness(t *testing.T) {
 	// Load both circuit definition and actual proof witness
-	circuitDef, err := LoadCircuitDefinition("testdata/dynamic_lookups_circuit.json")
+	circuitDef, err := stwo.LoadCircuitDefinition("testdata/dynamic_lookups_circuit.json")
 	if err != nil {
 		t.Fatalf("Failed to load circuit definition: %v", err)
 	}
 
-	proofWitness, err := LoadProofWitness("testdata/dynamic_lookups/proof_witness.json")
+	proofWitness, err := stwo.LoadProofWitness("testdata/dynamic_lookups/proof_witness.json")
 	if err != nil {
 		t.Fatalf("Failed to load proof witness: %v", err)
 	}

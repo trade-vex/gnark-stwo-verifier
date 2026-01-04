@@ -1,0 +1,98 @@
+{
+  "config": {
+    "pow_bits": 10,
+    "log_blowup_factor": 1,
+    "log_last_layer_deg": 0,
+    "num_queries": 3
+  },
+  "column_log_sizes": [
+    [],
+    [
+      4,
+      4
+    ],
+    [
+      4,
+      4,
+      4,
+      4
+    ],
+    [
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4
+    ]
+  ],
+  "structure": {
+    "num_commitments": 4,
+    "sampled_values_shape": [
+      [],
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        2,
+        2,
+        2
+      ],
+      [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    ],
+    "decommitment_hash_sizes": [
+      3,
+      15,
+      15,
+      15
+    ],
+    "decommitment_column_sizes": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "queried_values_sizes": [
+      0,
+      6,
+      12,
+      24
+    ],
+    "fri_structure": {
+      "first_layer_eval_count": 3,
+      "first_layer_hash_witness_count": 15,
+      "first_layer_column_witness_count": 0,
+      "inner_layers": [
+        {
+          "eval_count": 3,
+          "hash_witness_count": 12,
+          "column_witness_count": 0
+        },
+        {
+          "eval_count": 3,
+          "hash_witness_count": 9,
+          "column_witness_count": 0
+        },
+        {
+          "eval_count": 3,
+          "hash_witness_count": 6,
+          "column_witness_count": 0
+        }
+      ],
+      "last_layer_poly_degree": 1
+    }
+  }
+}

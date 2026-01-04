@@ -1,0 +1,695 @@
+{
+  "config": {
+    "pow_bits": 10,
+    "log_blowup_factor": 1,
+    "log_last_layer_deg": 0,
+    "num_queries": 3
+  },
+  "column_log_sizes": [
+    [
+      4
+    ],
+    [
+      4,
+      4,
+      4
+    ],
+    [
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4
+    ],
+    [
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4
+    ]
+  ],
+  "structure": {
+    "num_commitments": 4,
+    "sampled_values_shape": [
+      [
+        1
+      ],
+      [
+        1,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2
+      ],
+      [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    ],
+    "decommitment_hash_sizes": [
+      8,
+      8,
+      8,
+      8
+    ],
+    "decommitment_column_sizes": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "queried_values_sizes": [
+      3,
+      9,
+      24,
+      24
+    ],
+    "fri_structure": {
+      "first_layer_eval_count": 3,
+      "first_layer_hash_witness_count": 5,
+      "first_layer_column_witness_count": 0,
+      "inner_layers": [
+        {
+          "eval_count": 1,
+          "hash_witness_count": 4,
+          "column_witness_count": 0
+        },
+        {
+          "eval_count": 2,
+          "hash_witness_count": 2,
+          "column_witness_count": 0
+        },
+        {
+          "eval_count": 2,
+          "hash_witness_count": 0,
+          "column_witness_count": 0
+        }
+      ],
+      "last_layer_poly_degree": 1
+    }
+  },
+  "air_constraints": {
+    "constraints": [
+      {
+        "op": "sub",
+        "left": {
+          "op": "mul",
+          "left": {
+            "op": "sub",
+            "left": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "col",
+                  "tree_idx": 2,
+                  "col_idx": 3,
+                  "row_off": 0
+                },
+                {
+                  "op": "col",
+                  "tree_idx": 2,
+                  "col_idx": 4,
+                  "row_off": 0
+                },
+                {
+                  "op": "col",
+                  "tree_idx": 2,
+                  "col_idx": 5,
+                  "row_off": 0
+                },
+                {
+                  "op": "col",
+                  "tree_idx": 2,
+                  "col_idx": 6,
+                  "row_off": 0
+                }
+              ]
+            },
+            "right": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                }
+              ]
+            }
+          },
+          "right": {
+            "op": "param",
+            "name": "intermediate0"
+          }
+        },
+        "right": {
+          "op": "neg",
+          "child": {
+            "op": "secure_col",
+            "parts": [
+              {
+                "op": "col",
+                "tree_idx": 1,
+                "col_idx": 2,
+                "row_off": 0
+              },
+              {
+                "op": "const",
+                "value": 0
+              },
+              {
+                "op": "const",
+                "value": 0
+              },
+              {
+                "op": "const",
+                "value": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "op": "sub",
+        "left": {
+          "op": "mul",
+          "left": {
+            "op": "add",
+            "left": {
+              "op": "sub",
+              "left": {
+                "op": "sub",
+                "left": {
+                  "op": "secure_col",
+                  "parts": [
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 7,
+                      "row_off": 0
+                    },
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 8,
+                      "row_off": 0
+                    },
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 9,
+                      "row_off": 0
+                    },
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 10,
+                      "row_off": 0
+                    }
+                  ]
+                },
+                "right": {
+                  "op": "secure_col",
+                  "parts": [
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 7,
+                      "row_off": -1
+                    },
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 8,
+                      "row_off": -1
+                    },
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 9,
+                      "row_off": -1
+                    },
+                    {
+                      "op": "col",
+                      "tree_idx": 2,
+                      "col_idx": 10,
+                      "row_off": -1
+                    }
+                  ]
+                }
+              },
+              "right": {
+                "op": "secure_col",
+                "parts": [
+                  {
+                    "op": "col",
+                    "tree_idx": 2,
+                    "col_idx": 3,
+                    "row_off": 0
+                  },
+                  {
+                    "op": "col",
+                    "tree_idx": 2,
+                    "col_idx": 4,
+                    "row_off": 0
+                  },
+                  {
+                    "op": "col",
+                    "tree_idx": 2,
+                    "col_idx": 5,
+                    "row_off": 0
+                  },
+                  {
+                    "op": "col",
+                    "tree_idx": 2,
+                    "col_idx": 6,
+                    "row_off": 0
+                  }
+                ]
+              }
+            },
+            "right": {
+              "op": "mul",
+              "left": {
+                "op": "param",
+                "name": "claimed_sum"
+              },
+              "right": {
+                "op": "secure_col",
+                "parts": [
+                  {
+                    "op": "inv",
+                    "child": {
+                      "op": "param",
+                      "name": "column_size"
+                    }
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  }
+                ]
+              }
+            }
+          },
+          "right": {
+            "op": "mul",
+            "left": {
+              "op": "param",
+              "name": "intermediate1"
+            },
+            "right": {
+              "op": "param",
+              "name": "intermediate2"
+            }
+          }
+        },
+        "right": {
+          "op": "add",
+          "left": {
+            "op": "mul",
+            "left": {
+              "op": "param",
+              "name": "intermediate2"
+            },
+            "right": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "const",
+                  "value": 1
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                }
+              ]
+            }
+          },
+          "right": {
+            "op": "mul",
+            "left": {
+              "op": "param",
+              "name": "intermediate1"
+            },
+            "right": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "const",
+                  "value": 1
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "composition_log_degree_bound": 5,
+    "intermediates": [
+      {
+        "name": "intermediate2",
+        "ext_expr": {
+          "op": "sub",
+          "left": {
+            "op": "add",
+            "left": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                }
+              ]
+            },
+            "right": {
+              "op": "mul",
+              "left": {
+                "op": "param",
+                "name": "SmallerThan16Elements_alpha0"
+              },
+              "right": {
+                "op": "secure_col",
+                "parts": [
+                  {
+                    "op": "col",
+                    "tree_idx": 1,
+                    "col_idx": 1,
+                    "row_off": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  }
+                ]
+              }
+            }
+          },
+          "right": {
+            "op": "param",
+            "name": "SmallerThan16Elements_z"
+          }
+        }
+      },
+      {
+        "name": "intermediate0",
+        "ext_expr": {
+          "op": "sub",
+          "left": {
+            "op": "add",
+            "left": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                }
+              ]
+            },
+            "right": {
+              "op": "mul",
+              "left": {
+                "op": "param",
+                "name": "SmallerThan16Elements_alpha0"
+              },
+              "right": {
+                "op": "secure_col",
+                "parts": [
+                  {
+                    "op": "param",
+                    "name": "range_check_4_bits"
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  }
+                ]
+              }
+            }
+          },
+          "right": {
+            "op": "param",
+            "name": "SmallerThan16Elements_z"
+          }
+        }
+      },
+      {
+        "name": "intermediate1",
+        "ext_expr": {
+          "op": "sub",
+          "left": {
+            "op": "add",
+            "left": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                }
+              ]
+            },
+            "right": {
+              "op": "mul",
+              "left": {
+                "op": "param",
+                "name": "SmallerThan16Elements_alpha0"
+              },
+              "right": {
+                "op": "secure_col",
+                "parts": [
+                  {
+                    "op": "col",
+                    "tree_idx": 1,
+                    "col_idx": 0,
+                    "row_off": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  },
+                  {
+                    "op": "const",
+                    "value": 0
+                  }
+                ]
+              }
+            }
+          },
+          "right": {
+            "op": "param",
+            "name": "SmallerThan16Elements_z"
+          }
+        }
+      }
+    ],
+    "logup": {
+      "claimed_sum": {
+        "op": "param",
+        "name": "claimed_sum"
+      },
+      "fractions": [
+        {
+          "numerator": {
+            "op": "neg",
+            "child": {
+              "op": "secure_col",
+              "parts": [
+                {
+                  "op": "col",
+                  "tree_idx": 1,
+                  "col_idx": 2,
+                  "row_off": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                },
+                {
+                  "op": "const",
+                  "value": 0
+                }
+              ]
+            }
+          },
+          "denominator": {
+            "op": "param",
+            "name": "intermediate0"
+          }
+        },
+        {
+          "numerator": {
+            "op": "secure_col",
+            "parts": [
+              {
+                "op": "const",
+                "value": 1
+              },
+              {
+                "op": "const",
+                "value": 0
+              },
+              {
+                "op": "const",
+                "value": 0
+              },
+              {
+                "op": "const",
+                "value": 0
+              }
+            ]
+          },
+          "denominator": {
+            "op": "param",
+            "name": "intermediate1"
+          }
+        },
+        {
+          "numerator": {
+            "op": "secure_col",
+            "parts": [
+              {
+                "op": "const",
+                "value": 1
+              },
+              {
+                "op": "const",
+                "value": 0
+              },
+              {
+                "op": "const",
+                "value": 0
+              },
+              {
+                "op": "const",
+                "value": 0
+              }
+            ]
+          },
+          "denominator": {
+            "op": "param",
+            "name": "intermediate2"
+          }
+        }
+      ]
+    }
+  }
+}
