@@ -3,6 +3,7 @@
 package circle
 
 import (
+	"fmt"
 	"math/big"
 
 	"github.com/consensys/gnark/constraint/solver"
@@ -70,14 +71,6 @@ func (c *CircleChip) M31Chip() *mersenne31.M31Chip {
 	return c.m31Chip
 }
 
-// Generator returns the circle group generator as a CirclePointM31.
-func (c *CircleChip) Generator() CirclePointM31 {
-	return CirclePointM31{
-		X: mersenne31.NewM31Const("2"),
-		Y: mersenne31.NewM31Const("1268011823"),
-	}
-}
-
 // Zero returns the identity element of the circle group: (1, 0).
 func (c *CircleChip) Zero() CirclePointM31 {
 	return CirclePointM31{
@@ -101,88 +94,6 @@ func (c *CircleChip) AddM31(p1, p2 CirclePointM31) CirclePointM31 {
 	y := c.m31Chip.AddM31(x1y2, y1x2)
 
 	return CirclePointM31{X: x, Y: y}
-}
-
-// DoubleM31 computes 2*p on the M31 circle.
-// 2*(x, y) = (2x^2 - 1, 2xy)
-func (c *CircleChip) DoubleM31(p CirclePointM31) CirclePointM31 {
-	// x' = 2x^2 - 1
-	xSq := c.m31Chip.MulM31(p.X, p.X)
-	twoXSq := c.m31Chip.MulM31Const(xSq, 2)
-	xNew := c.m31Chip.SubM31(twoXSq, mersenne31.One())
-
-	// y' = 2xy
-	xy := c.m31Chip.MulM31(p.X, p.Y)
-	yNew := c.m31Chip.MulM31Const(xy, 2)
-
-	return CirclePointM31{X: xNew, Y: yNew}
-}
-
-// DoubleX computes the x-coordinate of 2*p given only x.
-// double_x(x) = 2x^2 - 1
-// This is useful for FRI folding where we only need the x-coordinate.
-func (c *CircleChip) DoubleX(x mersenne31.M31Variable) mersenne31.M31Variable {
-	xSq := c.m31Chip.MulM31(x, x)
-	twoXSq := c.m31Chip.MulM31Const(xSq, 2)
-	return c.m31Chip.SubM31(twoXSq, mersenne31.One())
-}
-
-// NegM31 computes the negation of a point on the M31 circle.
-// -(x, y) = (x, -y)
-func (c *CircleChip) NegM31(p CirclePointM31) CirclePointM31 {
-	return CirclePointM31{
-		X: p.X,
-		Y: c.m31Chip.NegM31(p.Y),
-	}
-}
-
-// SubM31 computes p1 - p2 on the M31 circle.
-func (c *CircleChip) SubM31(p1, p2 CirclePointM31) CirclePointM31 {
-	negP2 := c.NegM31(p2)
-	return c.AddM31(p1, negP2)
-}
-
-// ConjugateM31 computes the conjugate of a point: (x, y) -> (x, -y).
-// This is the same as negation for the circle group.
-func (c *CircleChip) ConjugateM31(p CirclePointM31) CirclePointM31 {
-	return c.NegM31(p)
-}
-
-// Antipode computes the antipodal point: (x, y) -> (-x, -y).
-func (c *CircleChip) Antipode(p CirclePointM31) CirclePointM31 {
-	return CirclePointM31{
-		X: c.m31Chip.NegM31(p.X),
-		Y: c.m31Chip.NegM31(p.Y),
-	}
-}
-
-// ScalarMul computes scalar * p using double-and-add.
-// scalar is a frontend.Variable representing the scalar.
-// nBits is the number of bits in the scalar.
-func (c *CircleChip) ScalarMul(p CirclePointM31, scalar frontend.Variable, nBits int) CirclePointM31 {
-	bits := c.api.ToBinary(scalar, nBits)
-
-	// Start with the identity
-	result := c.Zero()
-
-	// Double-and-add from MSB to LSB
-	for i := nBits - 1; i >= 0; i-- {
-		result = c.DoubleM31(result)
-
-		// Conditionally add p if bit is 1
-		sumWithP := c.AddM31(result, p)
-		result = c.SelectM31(bits[i], sumWithP, result)
-	}
-
-	return result
-}
-
-// SelectM31 returns a if cond is true, else b.
-func (c *CircleChip) SelectM31(cond frontend.Variable, a, b CirclePointM31) CirclePointM31 {
-	return CirclePointM31{
-		X: c.m31Chip.SelectM31(cond, a.X, b.X),
-		Y: c.m31Chip.SelectM31(cond, a.Y, b.Y),
-	}
 }
 
 // IndexToPoint converts a CirclePointIndex to a CirclePointM31.
@@ -217,90 +128,10 @@ func (c *CircleChip) AssertOnCircle(p CirclePointM31) {
 	c.m31Chip.AssertEqM31(sum, mersenne31.One())
 }
 
-// QM31 operations (for OOD points)
-
-// ZeroQM31 returns the identity element over QM31.
-func (c *CircleChip) ZeroQM31() CirclePointQM31 {
-	return CirclePointQM31{
-		X: mersenne31.OneQM31(),
-		Y: mersenne31.ZeroQM31(),
-	}
-}
-
-// AddQM31 computes the sum of two points on the QM31 circle.
-func (c *CircleChip) AddQM31(p1, p2 CirclePointQM31) CirclePointQM31 {
-	// x = x1*x2 - y1*y2
-	x1x2 := c.m31Chip.MulQM31(p1.X, p2.X)
-	y1y2 := c.m31Chip.MulQM31(p1.Y, p2.Y)
-	x := c.m31Chip.SubQM31(x1x2, y1y2)
-
-	// y = x1*y2 + y1*x2
-	x1y2 := c.m31Chip.MulQM31(p1.X, p2.Y)
-	y1x2 := c.m31Chip.MulQM31(p1.Y, p2.X)
-	y := c.m31Chip.AddQM31(x1y2, y1x2)
-
-	return CirclePointQM31{X: x, Y: y}
-}
-
-// DoubleQM31 computes 2*p on the QM31 circle.
-func (c *CircleChip) DoubleQM31(p CirclePointQM31) CirclePointQM31 {
-	// x' = 2x^2 - 1
-	xSq := c.m31Chip.MulQM31(p.X, p.X)
-	two := mersenne31.NewM31Const("2")
-	twoXSq := c.m31Chip.MulQM31ByM31(xSq, two)
-	xNew := c.m31Chip.SubQM31ByM31(twoXSq, mersenne31.One())
-
-	// y' = 2xy
-	xy := c.m31Chip.MulQM31(p.X, p.Y)
-	yNew := c.m31Chip.MulQM31ByM31(xy, two)
-
-	return CirclePointQM31{X: xNew, Y: yNew}
-}
-
-// DoubleXQM31 computes the x-coordinate of 2*p given only x (QM31 version).
-func (c *CircleChip) DoubleXQM31(x mersenne31.QM31Variable) mersenne31.QM31Variable {
-	xSq := c.m31Chip.MulQM31(x, x)
-	two := mersenne31.NewM31Const("2")
-	twoXSq := c.m31Chip.MulQM31ByM31(xSq, two)
-	return c.m31Chip.SubQM31ByM31(twoXSq, mersenne31.One())
-}
-
-// NegQM31 computes the negation of a QM31 circle point.
-func (c *CircleChip) NegQM31(p CirclePointQM31) CirclePointQM31 {
-	return CirclePointQM31{
-		X: p.X,
-		Y: c.m31Chip.NegQM31(p.Y),
-	}
-}
-
-// GetRandomPoint draws a random point on the QM31 circle from the channel.
-// The point is drawn as random x, then y is computed as sqrt(1 - x^2).
-// This function takes the random value as input (drawn from channel externally).
-func (c *CircleChip) GetRandomPointFromX(x mersenne31.QM31Variable) CirclePointQM31 {
-	// Compute y^2 = 1 - x^2
-	xSq := c.m31Chip.MulQM31(x, x)
-	ySq := c.m31Chip.SubQM31(mersenne31.OneQM31(), xSq)
-
-	// y = sqrt(y^2) - computed via hint and verified
-	// For now, return a placeholder - actual sqrt implementation needed
-	return CirclePointQM31{
-		X: x,
-		Y: ySq, // This should be sqrt(ySq)
-	}
-}
-
-// SelectQM31 returns a if cond is true, else b.
-func (c *CircleChip) SelectQM31(cond frontend.Variable, a, b CirclePointQM31) CirclePointQM31 {
-	return CirclePointQM31{
-		X: c.m31Chip.SelectQM31(cond, a.X, b.X),
-		Y: c.m31Chip.SelectQM31(cond, a.Y, b.Y),
-	}
-}
-
 // IndexToPointHint computes g^index where g is the circle generator.
 func IndexToPointHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	if len(inputs) != 1 {
-		panic("IndexToPointHint expects 1 input")
+		return fmt.Errorf("IndexToPointHint expects 1 input, got %d", len(inputs))
 	}
 
 	index := inputs[0].Uint64()
