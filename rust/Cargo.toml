@@ -27,13 +27,15 @@ hex = "0.4"
 num-traits = "0.2"
 rand = "0.8"
 starknet-ff = { version = "0.3.7", optional = true }
+clap = { version = "4.4", features = ["derive"], optional = true }
 
 [features]
 default = ["stwo_support"]
-stwo_support = ["stwo", "stwo-constraint-framework", "starknet-ff"]
+stwo_support = ["stwo", "stwo-constraint-framework", "starknet-ff", "clap"]
 
 [dev-dependencies]
 rand = "0.8"
+blake2 = "0.10"
 
 [[example]]
 name = "proving_an_air"
@@ -41,4 +43,36 @@ required-features = ["stwo_support"]
 
 [[example]]
 name = "static_lookups"
+required-features = ["stwo_support"]
+
+[[example]]
+name = "trace_fold_values"
+required-features = ["stwo_support"]
+
+[[example]]
+name = "trace_merkle_tree1"
+
+[[example]]
+name = "verify_hash"
+
+[[example]]
+name = "trace_with_prefix"
+
+[[example]]
+name = "verify_using_stwo"
+required-features = ["stwo_support"]
+
+[[example]]
+name = "debug_verify"
+required-features = ["stwo_support"]
+
+[[example]]
+name = "full_verify"
+required-features = ["stwo_support"]
+
+[[example]]
+name = "trace_verification"
+
+[[bin]]
+name = "stwo-witness-gen"
 required-features = ["stwo_support"]

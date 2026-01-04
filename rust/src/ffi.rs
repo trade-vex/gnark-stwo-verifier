@@ -220,3 +220,63 @@ pub unsafe extern "C" fn generate_static_lookups_witness(
         Err(_) => FfiError::IoError,
     }
 }
+
+// ============================================================================
+// Circuit Definition Export Functions
+// ============================================================================
+
+/// Extract simple AIR circuit definition and return as JSON.
+///
+/// # Safety
+///
+/// The caller must free the returned string using `free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn extract_simple_air_circuit_def(
+    output: *mut *mut c_char,
+) -> FfiError {
+    if output.is_null() {
+        return FfiError::NullPointer;
+    }
+
+    match crate::proof_generators::extract_simple_air_circuit_def() {
+        Ok(circuit_def) => match circuit_def.to_json() {
+            Ok(json) => match CString::new(json) {
+                Ok(cstr) => {
+                    *output = cstr.into_raw();
+                    FfiError::Success
+                }
+                Err(_) => FfiError::SerializationError,
+            },
+            Err(_) => FfiError::SerializationError,
+        },
+        Err(_) => FfiError::IoError,
+    }
+}
+
+/// Extract static lookups circuit definition and return as JSON.
+///
+/// # Safety
+///
+/// The caller must free the returned string using `free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn extract_static_lookups_circuit_def(
+    output: *mut *mut c_char,
+) -> FfiError {
+    if output.is_null() {
+        return FfiError::NullPointer;
+    }
+
+    match crate::proof_generators::extract_static_lookups_circuit_def() {
+        Ok(circuit_def) => match circuit_def.to_json() {
+            Ok(json) => match CString::new(json) {
+                Ok(cstr) => {
+                    *output = cstr.into_raw();
+                    FfiError::Success
+                }
+                Err(_) => FfiError::SerializationError,
+            },
+            Err(_) => FfiError::SerializationError,
+        },
+        Err(_) => FfiError::IoError,
+    }
+}
