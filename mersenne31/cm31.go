@@ -3,6 +3,7 @@
 package mersenne31
 
 import (
+	"fmt"
 	"math/big"
 
 	"github.com/consensys/gnark/constraint/solver"
@@ -35,22 +36,6 @@ func OneCM31() CM31Variable {
 	}
 }
 
-// NewCM31Const creates a constant CM31Variable.
-func NewCM31Const(real, imag string) CM31Variable {
-	return CM31Variable{
-		Real: NewM31Const(real),
-		Imag: NewM31Const(imag),
-	}
-}
-
-// NewCM31 creates a CM31Variable from witness values.
-func NewCM31(real, imag string) CM31Variable {
-	return CM31Variable{
-		Real: NewM31(real),
-		Imag: NewM31(imag),
-	}
-}
-
 // AddCM31 computes a + b in CM31.
 func (c *M31Chip) AddCM31(a, b CM31Variable) CM31Variable {
 	return CM31Variable{
@@ -59,27 +44,11 @@ func (c *M31Chip) AddCM31(a, b CM31Variable) CM31Variable {
 	}
 }
 
-// AddCM31NoReduce computes a + b without reduction.
-func (c *M31Chip) AddCM31NoReduce(a, b CM31Variable) CM31Variable {
-	return CM31Variable{
-		Real: c.AddM31NoReduce(a.Real, b.Real),
-		Imag: c.AddM31NoReduce(a.Imag, b.Imag),
-	}
-}
-
 // SubCM31 computes a - b in CM31.
 func (c *M31Chip) SubCM31(a, b CM31Variable) CM31Variable {
 	return CM31Variable{
 		Real: c.SubM31(a.Real, b.Real),
 		Imag: c.SubM31(a.Imag, b.Imag),
-	}
-}
-
-// NegCM31 computes -a in CM31.
-func (c *M31Chip) NegCM31(a CM31Variable) CM31Variable {
-	return CM31Variable{
-		Real: c.NegM31(a.Real),
-		Imag: c.NegM31(a.Imag),
 	}
 }
 
@@ -100,25 +69,6 @@ func (c *M31Chip) MulCM31(a, b CM31Variable) CM31Variable {
 		Real: c.SubM31(ac, bd),
 		Imag: c.AddM31(ad, bc),
 	}
-}
-
-// MulCM31NoReduce computes a * b without reduction.
-func (c *M31Chip) MulCM31NoReduce(a, b CM31Variable) CM31Variable {
-	ac := c.MulM31NoReduce(a.Real, b.Real)
-	bd := c.MulM31NoReduce(a.Imag, b.Imag)
-	ad := c.MulM31NoReduce(a.Real, b.Imag)
-	bc := c.MulM31NoReduce(a.Imag, b.Real)
-
-	// Real: ac - bd (need to lift bd for subtraction)
-	real := M31Variable{
-		Value:      c.api.Sub(ac.Value, bd.Value),
-		UpperBound: new(big.Int).Add(ac.UpperBound, bd.UpperBound),
-	}
-
-	// Imag: ad + bc
-	imag := c.AddM31NoReduce(ad, bc)
-
-	return CM31Variable{Real: real, Imag: imag}
 }
 
 // MulCM31ByM31 computes a * b where a is CM31 and b is M31.
@@ -171,12 +121,6 @@ func (c *M31Chip) InvCM31(a CM31Variable) CM31Variable {
 	return aInv
 }
 
-// DivCM31 computes a / b in CM31.
-func (c *M31Chip) DivCM31(a, b CM31Variable) CM31Variable {
-	bInv := c.InvCM31(b)
-	return c.MulCM31(a, bInv)
-}
-
 // AssertEqCM31 asserts that a == b in CM31.
 func (c *M31Chip) AssertEqCM31(a, b CM31Variable) {
 	c.AssertEqM31(a.Real, b.Real)
@@ -203,7 +147,7 @@ func (c *M31Chip) ReduceSlowCM31(a CM31Variable) CM31Variable {
 // (a + bi)^{-1} = (a - bi) / (a^2 + b^2)
 func InvCM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	if len(inputs) != 2 {
-		panic("InvCM31Hint expects 2 inputs")
+		return fmt.Errorf("InvCM31Hint expects 2 inputs, got %d", len(inputs))
 	}
 
 	a := new(big.Int).Mod(inputs[0], M31Modulus)
@@ -216,7 +160,7 @@ func InvCM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	normSq.Mod(normSq, M31Modulus)
 
 	if normSq.Sign() == 0 {
-		panic("cannot invert zero CM31 element")
+		return fmt.Errorf("InvCM31Hint: cannot invert zero CM31 element (a=%s, b=%s)", a.String(), b.String())
 	}
 
 	// Compute normSq^{-1} = normSq^{p-2} mod p

@@ -6,6 +6,7 @@
 package mersenne31
 
 import (
+	"fmt"
 	"math/big"
 
 	"github.com/consensys/gnark/constraint/solver"
@@ -86,15 +87,6 @@ func NewM31Const(value string) M31Variable {
 	return M31Variable{
 		Value:      frontend.Variable(value),
 		UpperBound: intValue,
-	}
-}
-
-// NewM31 creates an M31Variable from an unknown value (witness).
-// Assumes the value is in range [0, 2^32).
-func NewM31(value string) M31Variable {
-	return M31Variable{
-		Value:      frontend.Variable(value),
-		UpperBound: new(big.Int).SetUint64(1 << 32),
 	}
 }
 
@@ -193,24 +185,11 @@ func (c *M31Chip) InvM31(a M31Variable) M31Variable {
 	return aInv
 }
 
-// DivM31 computes a / b in M31.
-func (c *M31Chip) DivM31(a, b M31Variable) M31Variable {
-	bInv := c.InvM31(b)
-	return c.MulM31(a, bInv)
-}
-
 // AssertEqM31 asserts that a == b in M31.
 func (c *M31Chip) AssertEqM31(a, b M31Variable) {
 	aReduced := c.ReduceSlow(a)
 	bReduced := c.ReduceSlow(b)
 	c.api.AssertIsEqual(aReduced.Value, bReduced.Value)
-}
-
-// AssertNeM31 asserts that a != b in M31.
-func (c *M31Chip) AssertNeM31(a, b M31Variable) {
-	aReduced := c.ReduceSlow(a)
-	bReduced := c.ReduceSlow(b)
-	c.api.AssertIsDifferent(aReduced.Value, bReduced.Value)
 }
 
 // SelectM31 returns a if cond is true, else b.
@@ -341,12 +320,6 @@ func (c *M31Chip) rangeCheckN(x frontend.Variable, n int) {
 	}
 }
 
-// ToBinary converts an M31 element to its binary representation (31 bits).
-func (c *M31Chip) ToBinary(x M31Variable) []frontend.Variable {
-	reduced := c.ReduceSlow(x)
-	return c.api.ToBinary(reduced.Value, 31)
-}
-
 // API returns the underlying gnark API.
 func (c *M31Chip) API() frontend.API {
 	return c.api
@@ -368,7 +341,7 @@ func (c *M31Chip) M31ToQM31(x M31Variable) QM31Variable {
 // Returns [quotient, remainder].
 func ReduceM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	if len(inputs) != 1 {
-		panic("ReduceM31Hint expects 1 input")
+		return fmt.Errorf("ReduceM31Hint expects 1 input, got %d", len(inputs))
 	}
 	x := inputs[0]
 	quotient := new(big.Int).Div(x, M31Modulus)
@@ -382,13 +355,13 @@ func ReduceM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 // Returns [lowLimb, highLimb].
 func SplitLimbsM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	if len(inputs) != 1 {
-		panic("SplitLimbsM31Hint expects 1 input")
+		return fmt.Errorf("SplitLimbsM31Hint expects 1 input, got %d", len(inputs))
 	}
 	x := inputs[0]
 
 	// x should be < p = 2^31 - 1
 	if x.Cmp(M31Modulus) >= 0 {
-		panic("input is not a valid M31 element")
+		return fmt.Errorf("SplitLimbsM31Hint: input %s is not a valid M31 element (>= %s)", x.String(), M31Modulus.String())
 	}
 
 	lowLimb := new(big.Int).And(x, new(big.Int).Sub(TwoTo27, big.NewInt(1)))
@@ -403,11 +376,11 @@ func SplitLimbsM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error 
 // Uses Fermat's little theorem: x^{-1} = x^{p-2} mod p.
 func InvM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	if len(inputs) != 1 {
-		panic("InvM31Hint expects 1 input")
+		return fmt.Errorf("InvM31Hint expects 1 input, got %d", len(inputs))
 	}
 	x := new(big.Int).Mod(inputs[0], M31Modulus)
 	if x.Sign() == 0 {
-		panic("cannot invert zero")
+		return fmt.Errorf("InvM31Hint: cannot invert zero")
 	}
 
 	// x^{-1} = x^{p-2} mod p

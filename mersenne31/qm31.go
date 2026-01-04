@@ -4,6 +4,7 @@
 package mersenne31
 
 import (
+	"fmt"
 	"math/big"
 
 	"github.com/consensys/gnark/constraint/solver"
@@ -44,26 +45,6 @@ func NewQM31Const(a, b, c, d string) QM31Variable {
 			NewM31Const(d),
 		},
 	}
-}
-
-// NewQM31 creates a QM31Variable from witness values.
-func NewQM31(a, b, c, d string) QM31Variable {
-	return QM31Variable{
-		Value: [4]M31Variable{
-			NewM31(a),
-			NewM31(b),
-			NewM31(c),
-			NewM31(d),
-		},
-	}
-}
-
-// NewQM31FromArray creates a QM31Variable from an array of strings.
-func NewQM31FromArray(values []string) QM31Variable {
-	if len(values) != 4 {
-		panic("QM31 requires exactly 4 values")
-	}
-	return NewQM31(values[0], values[1], values[2], values[3])
 }
 
 // NewQM31FromM31 creates a QM31Variable from four M31Variables.
@@ -211,28 +192,96 @@ func (c *M31Chip) MulQM31ByCM31(a QM31Variable, b CM31Variable) QM31Variable {
 	return NewQM31FromCM31(first, second)
 }
 
-// AddQM31ByM31 computes a + b where a is QM31 and b is M31.
-func (c *M31Chip) AddQM31ByM31(a QM31Variable, b M31Variable) QM31Variable {
-	return QM31Variable{
-		Value: [4]M31Variable{
-			c.AddM31(a.Value[0], b),
-			a.Value[1],
-			a.Value[2],
-			a.Value[3],
-		},
-	}
-}
+// FromPartialEvals combines 4 QM31 evaluations into a single QM31 value.
+// This is the inverse of decomposing a QM31-valued polynomial into 4 base-field polynomials.
+// Formula: result = evals[0] + evals[1]*i + evals[2]*j + evals[3]*ij
+// where i = (0,1,0,0), j = (0,0,1,0), ij = (0,0,0,1) in QM31.
+func (c *M31Chip) FromPartialEvals(evals [4]QM31Variable) QM31Variable {
+	// Define the basis elements:
+	// i = (0, 1, 0, 0) in QM31
+	// j = (0, 0, 1, 0) in QM31
+	// k = ij = (0, 0, 0, 1) in QM31
 
-// SubQM31ByM31 computes a - b where a is QM31 and b is M31.
-func (c *M31Chip) SubQM31ByM31(a QM31Variable, b M31Variable) QM31Variable {
-	return QM31Variable{
+	// Start with evals[0]
+	result := evals[0]
+
+	// Add evals[1] * i
+	// (a + bi + cj + dk) * (0 + 1*i + 0*j + 0*k) = bi + a*(-1+i) = (-a + bi + ai)
+	// Actually, let's compute this more carefully.
+	// In QM31, the element i = (0,1,0,0) means the CM31 element i, which squares to 2+i.
+	// Multiplication by (0,1,0,0) where element is [a,b,c,d]:
+	// [a,b,c,d] * [0,1,0,0] = (a+bi) + (c+di)u * (0+1i) + 0u
+	// = (a+bi)*(i) + (c+di)*i*u = (ai - b) + (ci - d)u = [-b + ai] + [-d + ci]u
+	// = [-b, a, -d, c]
+	i_term := QM31Variable{
 		Value: [4]M31Variable{
-			c.SubM31(a.Value[0], b),
-			a.Value[1],
-			a.Value[2],
-			a.Value[3],
+			c.NegM31(evals[1].Value[1]), // -b
+			evals[1].Value[0],           // a
+			c.NegM31(evals[1].Value[3]), // -d
+			evals[1].Value[2],           // c
 		},
 	}
+	result = c.AddQM31(result, i_term)
+
+	// Add evals[2] * j (j = u in QM31)
+	// [a,b,c,d] * [0,0,1,0] = (a+bi)*(u) + (c+di)*u*u
+	// u^2 = 2+i, so (c+di)*u*u = (c+di)*(2+i) = 2c+ci+2di+di^2 = 2c+ci+2di-d+di = (2c-d) + (c+2d)i
+	// So result = [0,0,a,b] + [(2c-d), (c+2d), 0, 0]
+	// Hmm, this is getting complex. Let me use the direct formula instead.
+	//
+	// Actually, simpler: j = [0,0,1,0] means "1*u" in QM31 = CM31[u]/(u^2-(2+i)).
+	// [a,b,c,d] * [0,0,1,0]:
+	// Let x = (a+bi) + (c+di)u
+	// Let y = 0 + 1*u = u
+	// x*y = (a+bi)*u + (c+di)*u^2 = (a+bi)*u + (c+di)*(2+i)
+	// = (a+bi)*u + (2c-d) + (c+2d)i
+	// = [(2c-d) + (c+2d)i] + [(a+bi)]u
+	// = [2c-d, c+2d, a, b]
+	twoC := c.AddM31(evals[2].Value[2], evals[2].Value[2])
+	twoD := c.AddM31(evals[2].Value[3], evals[2].Value[3])
+	j_term := QM31Variable{
+		Value: [4]M31Variable{
+			c.SubM31(twoC, evals[2].Value[3]),       // 2c - d
+			c.AddM31(evals[2].Value[2], twoD),       // c + 2d
+			evals[2].Value[0],                       // a
+			evals[2].Value[1],                       // b
+		},
+	}
+	result = c.AddQM31(result, j_term)
+
+	// Add evals[3] * k (k = ij = i*u)
+	// [a,b,c,d] * [0,0,0,1]:
+	// Let x = (a+bi) + (c+di)u
+	// Let y = 0 + i*u = iu
+	// x*y = (a+bi)*iu + (c+di)*iu^2
+	//
+	// In QM31: u^2 = 2+i (where i is the CM31 imaginary with i^2 = -1)
+	// In CM31: i^2 = -1 (standard complex multiplication)
+	//
+	// (a+bi)*i = ai + bi^2 = ai - b = (-b + ai)
+	// So (a+bi)*iu = (-b + ai)u
+	//
+	// (c+di)*i = ci + di^2 = ci - d = (-d + ci)
+	// (c+di)*i*(2+i) = (-d + ci)*(2+i) = -2d + ci*2 - di + ci^2
+	// = -2d + 2ci - di + c*(-1) = -2d + 2ci - di - c
+	// = (-c - 2d) + (2c - d)i
+	//
+	// So x*iu = [(-c - 2d) + (2c - d)i] + [(-b) + (a)i]u
+	// = [-c - 2d, 2c - d, -b, a]
+	twoC3 := c.AddM31(evals[3].Value[2], evals[3].Value[2])
+	twoD3 := c.AddM31(evals[3].Value[3], evals[3].Value[3])
+	negC := c.NegM31(evals[3].Value[2])
+	k_term := QM31Variable{
+		Value: [4]M31Variable{
+			c.SubM31(negC, twoD3),                   // -c - 2d
+			c.SubM31(twoC3, evals[3].Value[3]),      // 2c - d
+			c.NegM31(evals[3].Value[1]),             // -b
+			evals[3].Value[0],                       // a
+		},
+	}
+	result = c.AddQM31(result, k_term)
+
+	return result
 }
 
 // ComplexConjugate computes the complex conjugate of a QM31 element.
@@ -280,18 +329,6 @@ func (c *M31Chip) InvQM31(a QM31Variable) QM31Variable {
 	return aInv
 }
 
-// DivQM31 computes a / b in QM31.
-func (c *M31Chip) DivQM31(a, b QM31Variable) QM31Variable {
-	bInv := c.InvQM31(b)
-	return c.MulQM31(a, bInv)
-}
-
-// DivQM31ByM31 computes a / b where a is QM31 and b is M31.
-func (c *M31Chip) DivQM31ByM31(a QM31Variable, b M31Variable) QM31Variable {
-	bInv := c.InvM31(b)
-	return c.MulQM31ByM31(a, bInv)
-}
-
 // AssertEqQM31 asserts that a == b in QM31.
 func (c *M31Chip) AssertEqQM31(a, b QM31Variable) {
 	for i := 0; i < 4; i++ {
@@ -323,42 +360,10 @@ func (c *M31Chip) ReduceSlowQM31(a QM31Variable) QM31Variable {
 	}
 }
 
-// Ext2Felt converts a QM31 to its four M31 components.
-func (c *M31Chip) Ext2Felt(a QM31Variable) [4]M31Variable {
-	return a.Value
-}
-
-// FromPartialEvals reconstructs a QM31 from four partial evaluations.
-// This is used in FRI folding.
-// Given evaluations [f(P), f(-P), f(iP), f(-iP)], reconstructs the original polynomial value.
-func (c *M31Chip) FromPartialEvals(evals [4]QM31Variable) QM31Variable {
-	// The formula for reconstruction from the stwo verifier:
-	// Let e0, e1, e2, e3 be the four evaluations
-	// a = (e0 + e1) / 2
-	// b = (e0 - e1) / 2
-	// c = (e2 + e3) / 2
-	// d = (e2 - e3) / 2
-	// Result depends on the specific point configuration
-
-	// For now, return a simple implementation
-	// The actual formula depends on the evaluation point structure
-	// This will need to be refined based on stwo's specific partial eval structure
-
-	// Simplified version - actual implementation needs stwo-specific formula
-	sum := c.AddQM31(evals[0], evals[1])
-	sum = c.AddQM31(sum, evals[2])
-	sum = c.AddQM31(sum, evals[3])
-
-	// Divide by 4 (multiply by inverse of 4)
-	four := NewM31Const("4")
-	fourInv := c.InvM31(four)
-	return c.MulQM31ByM31(sum, fourInv)
-}
-
 // InvQM31Hint computes the inverse of a QM31 element.
 func InvQM31Hint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	if len(inputs) != 4 {
-		panic("InvQM31Hint expects 4 inputs")
+		return fmt.Errorf("InvQM31Hint expects 4 inputs, got %d", len(inputs))
 	}
 
 	// Get the four M31 components
@@ -451,8 +456,11 @@ func mulMod(a, b *big.Int) *big.Int {
 }
 
 func invMod(a *big.Int) *big.Int {
+	// Note: This function assumes caller ensures a != 0
+	// In production, callers should check for zero before calling
 	if a.Sign() == 0 {
-		panic("cannot invert zero")
+		// Return 0 for zero input - caller should check
+		return big.NewInt(0)
 	}
 	pMinus2 := new(big.Int).Sub(M31Modulus, big.NewInt(2))
 	return new(big.Int).Exp(a, pMinus2, M31Modulus)
@@ -561,7 +569,3 @@ func (c *M31Chip) GetLineCoefficients(pointY, value QM31Variable) (cCoef, aCoef,
 	return cCoef, aCoef, bCoef
 }
 
-// MulQM31ByCM31Elem multiplies QM31 by a CM31.
-func (c *M31Chip) MulQM31ByCM31Elem(a QM31Variable, b CM31Variable) QM31Variable {
-	return c.MulQM31ByCM31(a, b)
-}
