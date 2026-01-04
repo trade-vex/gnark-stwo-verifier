@@ -25,42 +25,6 @@ type ProveResult struct {
 	PublicWitness witness.Witness
 }
 
-// Prove generates a Groth16 proof for a stwo proof.
-func Prove(
-	cs constraint.ConstraintSystem,
-	pk groth16.ProvingKey,
-	witnessJSON *WitnessJSON,
-) (*ProveResult, error) {
-	// Build the full circuit witness
-	assignment, err := buildFullAssignment(witnessJSON)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build assignment: %w", err)
-	}
-
-	// Create the witness
-	fullWitness, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
-	if err != nil {
-		return nil, fmt.Errorf("failed to create witness: %w", err)
-	}
-
-	// Generate the proof
-	proof, err := groth16.Prove(cs, pk, fullWitness)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate proof: %w", err)
-	}
-
-	// Extract public witness
-	publicWitness, err := fullWitness.Public()
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract public witness: %w", err)
-	}
-
-	return &ProveResult{
-		Proof:         proof,
-		PublicWitness: publicWitness,
-	}, nil
-}
-
 // convertFriProof converts a FriProofJSON to a FriProof circuit structure.
 func convertFriProof(fp *FriProofJSON, upperBound *big.Int) fri.FriProof {
 	// Convert first layer
@@ -203,30 +167,39 @@ func LoadPublicWitness(path string) (witness.Witness, error) {
 	return w, nil
 }
 
-// buildFullAssignment converts the JSON witness to FullStwoVerifierCircuit assignment.
-func buildFullAssignment(w *WitnessJSON) (*FullStwoVerifierCircuit, error) {
+// ============================================================================
+// Split File Functions
+// ============================================================================
+
+// BuildAssignmentFromSplit builds a circuit assignment from split witness files.
+// This combines the circuit config, proof witness, and public inputs into a single assignment.
+func BuildAssignmentFromSplit(
+	cfg *CircuitConfigJSON,
+	pw *ProofWitnessJSON,
+	pi *PublicInputsJSON,
+) (*FullStwoVerifierCircuit, error) {
 	upperBound := new(big.Int).SetUint64(1 << 31)
 
-	// Convert column log sizes
-	columnLogSizes := make([][]int, len(w.ColumnLogSizes))
-	for i, sizes := range w.ColumnLogSizes {
+	// Convert column log sizes from config
+	columnLogSizes := make([][]int, len(cfg.ColumnLogSizes))
+	for i, sizes := range cfg.ColumnLogSizes {
 		columnLogSizes[i] = make([]int, len(sizes))
 		for j, s := range sizes {
 			columnLogSizes[i][j] = int(s)
 		}
 	}
 
-	// Convert commitments
-	commitments := make([]blake2s.Blake2sHash, len(w.Proof.Commitments))
-	for i, c := range w.Proof.Commitments {
+	// Convert commitments from proof witness
+	commitments := make([]blake2s.Blake2sHash, len(pw.Proof.Commitments))
+	for i, c := range pw.Proof.Commitments {
 		for j := 0; j < 8; j++ {
 			commitments[i].Words[j] = frontend.Variable(c.Words[j])
 		}
 	}
 
-	// Convert sampled values (using wrapper types to avoid gnark schema bug)
-	sampledValues := make([]TreeSampledValues, len(w.Proof.SampledValues))
-	for i, tree := range w.Proof.SampledValues {
+	// Convert sampled values from proof witness
+	sampledValues := make([]TreeSampledValues, len(pw.Proof.SampledValues))
+	for i, tree := range pw.Proof.SampledValues {
 		sampledValues[i] = TreeSampledValues{
 			Columns: make([]QM31Column, len(tree)),
 		}
@@ -247,9 +220,9 @@ func buildFullAssignment(w *WitnessJSON) (*FullStwoVerifierCircuit, error) {
 		}
 	}
 
-	// Convert decommitments
-	decommitments := make([]merkle.MerkleDecommitment, len(w.Proof.Decommitments))
-	for i, d := range w.Proof.Decommitments {
+	// Convert decommitments from proof witness
+	decommitments := make([]merkle.MerkleDecommitment, len(pw.Proof.Decommitments))
+	for i, d := range pw.Proof.Decommitments {
 		hashWitness := make([]blake2s.Blake2sHash, len(d.HashWitness))
 		for j, h := range d.HashWitness {
 			for k := 0; k < 8; k++ {
@@ -269,9 +242,9 @@ func buildFullAssignment(w *WitnessJSON) (*FullStwoVerifierCircuit, error) {
 		}
 	}
 
-	// Convert queried values (using wrapper types to avoid gnark schema bug)
-	queriedValues := make([]M31Column, len(w.Proof.QueriedValues))
-	for i, tree := range w.Proof.QueriedValues {
+	// Convert queried values from proof witness
+	queriedValues := make([]M31Column, len(pw.Proof.QueriedValues))
+	for i, tree := range pw.Proof.QueriedValues {
 		queriedValues[i] = M31Column{
 			Values: make([]mersenne31.M31Variable, len(tree)),
 		}
@@ -283,11 +256,20 @@ func buildFullAssignment(w *WitnessJSON) (*FullStwoVerifierCircuit, error) {
 		}
 	}
 
-	// Convert FRI proof
-	friProof := convertFriProof(&w.Proof.FriProof, upperBound)
+	// Convert FRI proof from proof witness
+	friProof := convertFriProof(&pw.Proof.FriProof, upperBound)
 
-	// Compute public input hash
-	publicInputHash := frontend.Variable(w.Public.PublicInputHash.Words[0])
+	// Convert public input hash from public inputs file
+	var publicInputHash blake2s.Blake2sHash
+	for i := 0; i < 8; i++ {
+		publicInputHash.Words[i] = frontend.Variable(pi.PublicInputHash.Words[i])
+	}
+
+	// Convert AIR constraints if present
+	var airConstraints *AIRConstraints
+	if cfg.AIRConstraints != nil {
+		airConstraints = convertAIRConstraintsJSON(cfg.AIRConstraints)
+	}
 
 	assignment := &FullStwoVerifierCircuit{
 		PublicInputHash: publicInputHash,
@@ -296,17 +278,52 @@ func buildFullAssignment(w *WitnessJSON) (*FullStwoVerifierCircuit, error) {
 			SampledValues: sampledValues,
 			Decommitments: decommitments,
 			QueriedValues: queriedValues,
-			PowNonce:      frontend.Variable(w.Proof.PowNonce),
+			PowNonce:      frontend.Variable(pw.Proof.PowNonce),
 			FriProof:      friProof,
 		},
 		Config: PcsConfig{
-			PowBits:         int(w.Config.PowBits),
-			LogBlowupFactor: int(w.Config.LogBlowupFactor),
-			LogLastLayerDeg: int(w.Config.LogLastLayerDeg),
-			NumQueries:      int(w.Config.NumQueries),
+			PowBits:         int(cfg.Config.PowBits),
+			LogBlowupFactor: int(cfg.Config.LogBlowupFactor),
+			LogLastLayerDeg: int(cfg.Config.LogLastLayerDeg),
+			NumQueries:      int(cfg.Config.NumQueries),
 		},
 		ColumnLogSizes: columnLogSizes,
+		AIRConstraints: airConstraints,
 	}
 
 	return assignment, nil
+}
+
+// ProveFromSplit generates a Groth16 proof from split witness files.
+func ProveFromSplit(
+	cs constraint.ConstraintSystem,
+	pk groth16.ProvingKey,
+	cfg *CircuitConfigJSON,
+	pw *ProofWitnessJSON,
+	pi *PublicInputsJSON,
+) (*ProveResult, error) {
+	assignment, err := BuildAssignmentFromSplit(cfg, pw, pi)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build assignment from split: %w", err)
+	}
+
+	fullWitness, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create witness: %w", err)
+	}
+
+	proof, err := groth16.Prove(cs, pk, fullWitness)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate proof: %w", err)
+	}
+
+	publicWitness, err := fullWitness.Public()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract public witness: %w", err)
+	}
+
+	return &ProveResult{
+		Proof:         proof,
+		PublicWitness: publicWitness,
+	}, nil
 }

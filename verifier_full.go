@@ -3,7 +3,9 @@
 package stwo
 
 import (
+	"fmt"
 	"math/big"
+	"os"
 	"sort"
 
 	"github.com/consensys/gnark/constraint/solver"
@@ -17,11 +19,146 @@ import (
 )
 
 func init() {
+	fmt.Fprintf(os.Stderr, "[verifier_full] Registering hints...\n")
 	solver.RegisterHint(lineXHint)
 	solver.RegisterHint(circlePointFromQueryHint)
 	solver.RegisterHint(sortQueryPositionsHint)
+	solver.RegisterHint(selectUniquePositionsHint)
 	solver.RegisterHint(friMerkleWitnessIndicesHint)
 	solver.RegisterHint(friFirstLayerMerkleHint)
+	solver.RegisterHint(mainTreeMerkleHint)
+	solver.RegisterHint(merkleWitnessLayoutHint)
+	fmt.Fprintf(os.Stderr, "[verifier_full] Hints registered\n")
+}
+
+// merkleWitnessLayoutHint computes witness indices for Merkle tree verification.
+// This matches stwo's sequential witness consumption pattern.
+//
+// Input: [pos0, pos1, ..., posN-1, maxLogSize, numColumns]
+// Output: [witnessIdx(q0,level0), witnessIdx(q0,level1), ..., witnessIdx(qN-1,levelMax-1)]
+//
+// The algorithm simulates stwo's decommitment verification:
+// 1. At each level, process parent nodes in sorted order
+// 2. For each parent, check if left/right children are in the computed set
+// 3. If a child is not computed, consume the next witness
+// 4. Track which witness index each query position maps to at each level
+func merkleWitnessLayoutHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
+	numQueries := len(inputs) - 2
+	logDomainSize := int(inputs[numQueries].Int64())
+	// numColumns not needed for witness indexing
+
+	// Get sorted positions (query positions should already be sorted)
+	positions := make([]int64, numQueries)
+	for i := 0; i < numQueries; i++ {
+		positions[i] = inputs[i].Int64()
+	}
+
+	// Track which positions are "computed" at each level
+	// Level 0 = leaf level, positions are the original query positions
+	computedAtLevel := make([]map[int64]bool, logDomainSize+1)
+	computedAtLevel[0] = make(map[int64]bool)
+	for _, p := range positions {
+		computedAtLevel[0][p] = true
+	}
+
+	// Propagate computed positions up the tree
+	for level := 0; level < logDomainSize; level++ {
+		computedAtLevel[level+1] = make(map[int64]bool)
+		for pos := range computedAtLevel[level] {
+			parentPos := pos / 2
+			computedAtLevel[level+1][parentPos] = true
+		}
+	}
+
+	// Now simulate witness consumption at each level
+	// Witnesses are consumed when processing parent nodes in sorted order
+	type queryLevel struct {
+		query int
+		level int
+	}
+	witnessIdxMap := make(map[queryLevel]int64)
+
+	witnessIdx := int64(0)
+
+	for level := 0; level < logDomainSize; level++ {
+		// Get sorted parent positions that need processing at this level
+		parentPosSet := make(map[int64]bool)
+		for pos := range computedAtLevel[level] {
+			parentPosSet[pos/2] = true
+		}
+
+		// Sort parent positions
+		var parentPositions []int64
+		for p := range parentPosSet {
+			parentPositions = append(parentPositions, p)
+		}
+		sort.Slice(parentPositions, func(i, j int) bool {
+			return parentPositions[i] < parentPositions[j]
+		})
+
+		// For each parent, determine which witness is used for left/right children
+		// that are not in the computed set
+		for _, parentPos := range parentPositions {
+			leftChild := parentPos * 2
+			rightChild := parentPos*2 + 1
+
+			// Process left child
+			leftWitnessIdx := int64(-1)
+			if !computedAtLevel[level][leftChild] {
+				leftWitnessIdx = witnessIdx
+				witnessIdx++
+			}
+
+			// Process right child
+			rightWitnessIdx := int64(-1)
+			if !computedAtLevel[level][rightChild] {
+				rightWitnessIdx = witnessIdx
+				witnessIdx++
+			}
+
+			// Now, for each query position that maps to this parent,
+			// record which witness it should use for its sibling
+			for q := 0; q < numQueries; q++ {
+				queryPos := positions[q]
+				// Compute query's position at this level
+				for l := 0; l < level; l++ {
+					queryPos = queryPos / 2
+				}
+
+				// If this query's parent is the current parent
+				if queryPos/2 == parentPos {
+					// The query needs the sibling's witness
+					if queryPos%2 == 0 {
+						// Query is left child, needs right sibling
+						witnessIdxMap[queryLevel{q, level}] = rightWitnessIdx
+					} else {
+						// Query is right child, needs left sibling
+						witnessIdxMap[queryLevel{q, level}] = leftWitnessIdx
+					}
+				}
+			}
+		}
+	}
+
+	// Output witness indices for each (query, level)
+	outputIdx := 0
+	for q := 0; q < numQueries; q++ {
+		for level := 0; level < logDomainSize; level++ {
+			if idx, ok := witnessIdxMap[queryLevel{q, level}]; ok {
+				results[outputIdx] = big.NewInt(idx)
+			} else {
+				results[outputIdx] = big.NewInt(-1)
+			}
+			outputIdx++
+		}
+	}
+
+	return nil
+}
+
+// Legacy hint - keeping for reference
+func mainTreeMerkleHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
+	return merkleWitnessLayoutHint(nil, inputs, results)
 }
 
 // sortQueryPositionsHint sorts query positions in ascending order.
@@ -47,6 +184,53 @@ func sortQueryPositionsHint(_ *big.Int, inputs []*big.Int, results []*big.Int) e
 	for i, p := range positions {
 		results[i] = big.NewInt(p)
 	}
+	return nil
+}
+
+// selectUniquePositionsHint selects n unique positions from a list of drawn positions.
+// This matches stwo's BTreeSet behavior: positions are added in draw order,
+// duplicates are skipped, and we stop when we have n unique positions.
+// Input: [numQueries, pos0, pos1, pos2, ...]
+// Output: [idx0, idx1, ..., idxN-1, sortedPos0, sortedPos1, ..., sortedPosN-1]
+//
+//	where idx_i is the index in the input array of the i-th selected position
+func selectUniquePositionsHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
+	numQueries := int(inputs[0].Int64())
+	positions := inputs[1:]
+
+	// Simulate stwo's BTreeSet behavior: add positions in order, skip duplicates
+	seen := make(map[int64]bool)
+	selectedIndices := make([]int64, 0, numQueries)
+	selectedPositions := make([]int64, 0, numQueries)
+
+	for i := 0; i < len(positions) && len(selectedPositions) < numQueries; i++ {
+		pos := positions[i].Int64()
+		if !seen[pos] {
+			seen[pos] = true
+			selectedIndices = append(selectedIndices, int64(i))
+			selectedPositions = append(selectedPositions, pos)
+		}
+	}
+
+	if len(selectedPositions) < numQueries {
+		return fmt.Errorf("not enough unique positions: got %d, need %d", len(selectedPositions), numQueries)
+	}
+
+	// Sort positions (stwo uses BTreeSet which is sorted)
+	sortedPositions := make([]int64, numQueries)
+	copy(sortedPositions, selectedPositions)
+	sort.Slice(sortedPositions, func(i, j int) bool {
+		return sortedPositions[i] < sortedPositions[j]
+	})
+
+	// Output: [selectedIndices..., sortedPositions...]
+	for i := 0; i < numQueries; i++ {
+		results[i] = big.NewInt(selectedIndices[i])
+	}
+	for i := 0; i < numQueries; i++ {
+		results[numQueries+i] = big.NewInt(sortedPositions[i])
+	}
+
 	return nil
 }
 
@@ -183,8 +367,8 @@ const (
 
 // FullStwoVerifierCircuit is the complete gnark circuit for verifying stwo proofs.
 type FullStwoVerifierCircuit struct {
-	// Public inputs
-	PublicInputHash frontend.Variable `gnark:",public"`
+	// Public inputs (8 words of Blake2s hash)
+	PublicInputHash blake2s.Blake2sHash `gnark:",public"`
 
 	// The proof to verify (private witness)
 	Proof StwoProof
@@ -194,6 +378,15 @@ type FullStwoVerifierCircuit struct {
 
 	// Column log sizes for each tree
 	ColumnLogSizes [][]int
+
+	// AIR constraints for composition polynomial verification.
+	//
+	// SECURITY CRITICAL: If AIRConstraints is nil or empty, the composition
+	// polynomial check is SKIPPED, which means the verifier does NOT verify
+	// that the trace satisfies any AIR constraints. This allows ANY trace
+	// to pass verification. This mode should ONLY be used for testing the
+	// circuit structure, NEVER for production verification.
+	AIRConstraints *AIRConstraints
 }
 
 // DefineComplete implements the complete stwo verification algorithm.
@@ -219,6 +412,7 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 
 	// Mix commitment[0] (preprocessed trace)
 	if len(c.Proof.Commitments) > 0 {
+		fmt.Fprintf(os.Stderr, "[CHANNEL] Mixing commitment[0]: %v\n", c.Proof.Commitments[0].Words[0])
 		ch.MixCommitment(c.Proof.Commitments[0])
 	}
 
@@ -231,10 +425,12 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 			}
 		}
 	}
+	fmt.Fprintf(os.Stderr, "[CHANNEL] Mixing u64(maxLogSize): %d\n", maxLogSize)
 	ch.MixU64(frontend.Variable(maxLogSize))
 
 	// Mix commitment[1] (trace)
 	if len(c.Proof.Commitments) > 1 {
+		fmt.Fprintf(os.Stderr, "[CHANNEL] Mixing commitment[1]: %v\n", c.Proof.Commitments[1].Words[0])
 		ch.MixCommitment(c.Proof.Commitments[1])
 	}
 
@@ -250,11 +446,14 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 
 	// For each interaction trace (between trace and composition)
 	// Draw interaction random elements and mix the commitment
+	fmt.Fprintf(os.Stderr, "[CHANNEL] numCommitments=%d, interaction loop range: i=2 to i<%d\n", numCommitments, numCommitments-1)
 	for i := 2; i < numCommitments-1; i++ {
 		// Draw interaction random elements (e.g., lookup_elements for LogUp)
 		// LookupElements::draw draws 2 secure felts: z and alpha
+		fmt.Fprintf(os.Stderr, "[CHANNEL] Drawing z and alpha for interaction tree %d\n", i)
 		_ = ch.DrawSecureFelt() // z
 		_ = ch.DrawSecureFelt() // alpha
+		fmt.Fprintf(os.Stderr, "[CHANNEL] Mixing commitment[%d]: %v\n", i, c.Proof.Commitments[i].Words[0])
 		ch.MixCommitment(c.Proof.Commitments[i])
 	}
 
@@ -262,10 +461,12 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 	// Phase 2b: Draw Composition Random Coefficient
 	// ========================================
 
+	fmt.Fprintf(os.Stderr, "[CHANNEL] Drawing composition random coeff\n")
 	compositionRandomCoeff := ch.DrawSecureFelt()
 
 	// Mix composition commitment (always the last one)
 	if numCommitments > 2 {
+		fmt.Fprintf(os.Stderr, "[CHANNEL] Mixing commitment[%d] (composition): %v\n", numCommitments-1, c.Proof.Commitments[numCommitments-1].Words[0])
 		ch.MixCommitment(c.Proof.Commitments[numCommitments-1])
 	}
 
@@ -281,12 +482,14 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 	// ========================================
 
 	var allSampledValues []mersenne31.QM31Variable
-	for _, treeValues := range c.Proof.SampledValues {
-		for _, col := range treeValues.Columns {
+	for treeIdx, treeValues := range c.Proof.SampledValues {
+		for colIdx, col := range treeValues.Columns {
+			fmt.Fprintf(os.Stderr, "[CHANNEL] Tree %d, Col %d: %d values\n", treeIdx, colIdx, len(col.Values))
 			allSampledValues = append(allSampledValues, col.Values...)
 		}
 	}
 	if len(allSampledValues) > 0 {
+		fmt.Fprintf(os.Stderr, "[CHANNEL] Mixing %d sampled QM31 values\n", len(allSampledValues))
 		ch.MixFelts(allSampledValues)
 	}
 
@@ -323,10 +526,9 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 	// Phase 7: Proof of Work Verification
 	// ========================================
 
+	// VerifyPowNonce verifies the PoW without modifying channel state.
+	// Then we mix the nonce into the channel, matching the Rust verifier sequence.
 	c.verifyProofOfWork(api, ch, c.Proof.PowNonce)
-
-	// After PoW verification, the nonce must be mixed into the channel
-	// for the query position draws to match.
 	ch.MixU64(c.Proof.PowNonce)
 
 	// ========================================
@@ -339,12 +541,15 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 	// ========================================
 	// Phase 9: Verify Merkle Decommitments
 	// ========================================
-
-	// TEMPORARILY DISABLED to isolate FRI folding verification
-	// c.verifyMerkleDecommitments(
-	// 	api, m31Chip, blake2sChip,
-	// 	queryPositions,
-	// )
+	// SECURITY: Merkle verification is CRITICAL for soundness.
+	// Without it, the prover could provide inconsistent commitment data.
+	//
+	// TODO: Debug Merkle verification - the code has been updated to:
+	// Merkle verification: verify that queried values match commitments
+	c.verifyMerkleDecommitments(
+		api, m31Chip, blake2sChip,
+		queryPositions,
+	)
 
 	// ========================================
 	// Phase 10: Compute FRI Quotient Answers
@@ -374,9 +579,11 @@ func (c *FullStwoVerifierCircuit) Define(api frontend.API) error {
 	// ========================================
 	// Phase 12: Verify Composition Polynomial (AIR check)
 	// ========================================
-
+	// This verifies that the trace satisfies all AIR constraints by checking:
+	// composition_eval == expected_composition
+	// where composition_eval is reconstructed from the 8 split columns using from_partial_evals
 	c.verifyCompositionPolynomial(
-		m31Chip, circleChip,
+		api, m31Chip, circleChip,
 		oodPoint,
 		compositionRandomCoeff,
 	)
@@ -453,198 +660,400 @@ func (c *FullStwoVerifierCircuit) verifyProofOfWork(
 	ch.VerifyPowNonce(c.Config.PowBits, nonce)
 }
 
-// sampleQueryPositions samples random query positions from the channel and sorts them.
-// This matches Rust's stwo which draws 8 words at a time, uses as many as needed,
-// and then sorts the positions (stwo uses BTreeSet which sorts automatically).
+// sampleQueryPositions samples random query positions from the channel.
+// This matches Rust's stwo which draws words until it has n UNIQUE queries.
+// If a drawn position collides with an existing one, stwo keeps drawing.
+// We handle this by:
+// 1. Drawing enough words to cover worst-case collisions
+// 2. Using a hint to identify which words are kept (unique, in draw order)
+// 3. Verifying the selection in-circuit
 func (c *FullStwoVerifierCircuit) sampleQueryPositions(
 	api frontend.API,
 	ch *channel.Blake2sChannel,
 	logDomainSize int,
 ) []frontend.Variable {
-	positions := make([]frontend.Variable, 0, c.Config.NumQueries)
+	// Draw more words than strictly needed to handle potential collisions.
+	// For n queries and domain size 2^k, the probability of any collision is
+	// roughly n^2 / 2^k. We draw extra words to cover this.
+	// With 8 words per draw, we need ceil((n + extra) / 8) draws.
+	maxDraws := c.Config.NumQueries + 8 // Extra buffer for collisions
+	numFullDraws := (maxDraws + 7) / 8
 
-	// Draw 8 words at a time and use as many as needed
-	for len(positions) < c.Config.NumQueries {
+	allDrawnWords := make([]frontend.Variable, 0, numFullDraws*8)
+	for i := 0; i < numFullDraws; i++ {
 		words := ch.DrawU32s()
-		for i := 0; i < 8 && len(positions) < c.Config.NumQueries; i++ {
-			// Extract low logDomainSize bits
-			bits := api.ToBinary(words[i], 32)
-			pos := api.FromBinary(bits[:logDomainSize]...)
-			positions = append(positions, pos)
+		for j := 0; j < 8; j++ {
+			allDrawnWords = append(allDrawnWords, words[j])
 		}
 	}
 
-	// Sort positions using hint and verify the sorting
-	sortedPositions, err := api.Compiler().NewHint(
-		sortQueryPositionsHint, c.Config.NumQueries, positions...,
+	// Extract positions from all drawn words (mask to domain size)
+	allPositions := make([]frontend.Variable, len(allDrawnWords))
+	for i, word := range allDrawnWords {
+		bits := api.ToBinary(word, 32)
+		allPositions[i] = api.FromBinary(bits[:logDomainSize]...)
+	}
+
+	// Use hint to determine which positions are selected (unique, in order drawn)
+	// The hint returns: [selectedIdx0, selectedIdx1, ..., sortedPos0, sortedPos1, ...]
+	hintInputs := append([]frontend.Variable{frontend.Variable(c.Config.NumQueries)}, allPositions...)
+	hintOutputs, err := api.Compiler().NewHint(
+		selectUniquePositionsHint, 2*c.Config.NumQueries, hintInputs...,
 	)
 	if err != nil {
 		panic(err)
 	}
 
-	// Verify the sorted positions are in ascending order
-	for i := 0; i < c.Config.NumQueries-1; i++ {
-		// sortedPositions[i] <= sortedPositions[i+1]
-		// This is equivalent to sortedPositions[i+1] - sortedPositions[i] >= 0
-		// which we verify by checking it fits in logDomainSize bits (non-negative)
-		diff := api.Sub(sortedPositions[i+1], sortedPositions[i])
-		// Range check: diff must be in [0, 2^logDomainSize)
-		api.ToBinary(diff, logDomainSize)
+	// Extract selected indices and sorted positions from hint output
+	selectedIndices := hintOutputs[:c.Config.NumQueries]
+	sortedPositions := hintOutputs[c.Config.NumQueries:]
+
+	// Verify: each selected index maps to the corresponding sorted position
+	// and indices are in strictly increasing order (to ensure we process in draw order)
+	for i := 0; i < c.Config.NumQueries; i++ {
+		// Verify index is in valid range [0, len(allPositions))
+		api.ToBinary(selectedIndices[i], 8) // Max 256 positions
+
+		// Verify the position at selectedIndices[i] equals the value we'll use
+		// We use a select chain to pick the value at the given index
+		selectedPos := frontend.Variable(0)
+		for j := 0; j < len(allPositions); j++ {
+			isMatch := api.IsZero(api.Sub(selectedIndices[i], frontend.Variable(j)))
+			selectedPos = api.Select(isMatch, allPositions[j], selectedPos)
+		}
+		// The selected position should appear in our sorted list
+		// (we verify uniqueness below, so this confirms the mapping)
+		_ = selectedPos // Used implicitly through sorting verification
 	}
 
-	// Verify the sorted positions contain the same values as the original (permutation check)
-	// We verify by checking that sum and product are equal (simple check for small n)
-	// Note: This is a heuristic check that's sufficient for security
-	sumOrig := frontend.Variable(0)
+	// Verify indices are strictly increasing (ensures draw order is preserved)
+	for i := 0; i < c.Config.NumQueries-1; i++ {
+		diff := api.Sub(selectedIndices[i+1], selectedIndices[i])
+		// diff must be >= 1 (strictly increasing)
+		// We check diff - 1 >= 0 by range checking it fits in 8 bits
+		api.ToBinary(api.Sub(diff, frontend.Variable(1)), 8)
+	}
+
+	// Verify sorted positions are strictly increasing (unique and sorted)
+	for i := 0; i < c.Config.NumQueries-1; i++ {
+		diff := api.Sub(sortedPositions[i+1], sortedPositions[i])
+		// diff must be >= 1 (strictly increasing means unique)
+		api.ToBinary(api.Sub(diff, frontend.Variable(1)), logDomainSize)
+	}
+
+	// Verify the sorted positions are a permutation of selected positions.
+	// SECURITY: Sum-only check is not sound! We use a proper multiset verification:
+	// For each selected position, verify it appears exactly once in sorted positions.
+	// This is O(n²) but n is small (typically 3-10 queries).
+
+	// First, collect the selected positions
+	selectedPositions := make([]frontend.Variable, c.Config.NumQueries)
+	for i := 0; i < c.Config.NumQueries; i++ {
+		selectedPos := frontend.Variable(0)
+		for j := 0; j < len(allPositions); j++ {
+			isMatch := api.IsZero(api.Sub(selectedIndices[i], frontend.Variable(j)))
+			selectedPos = api.Select(isMatch, allPositions[j], selectedPos)
+		}
+		selectedPositions[i] = selectedPos
+	}
+
+	// For each selected position, verify it appears exactly once in sorted positions.
+	for i := 0; i < c.Config.NumQueries; i++ {
+		// Count how many times selectedPositions[i] appears in sortedPositions
+		matchCount := frontend.Variable(0)
+		for j := 0; j < c.Config.NumQueries; j++ {
+			isEqual := api.IsZero(api.Sub(selectedPositions[i], sortedPositions[j]))
+			matchCount = api.Add(matchCount, isEqual)
+		}
+		// Each selected position must appear exactly once in sorted
+		api.AssertIsEqual(matchCount, frontend.Variable(1))
+	}
+
+	// Additional check: verify sum equality for extra assurance
+	// (this is redundant with the above but provides defense in depth)
+	sumSelected := frontend.Variable(0)
 	sumSorted := frontend.Variable(0)
 	for i := 0; i < c.Config.NumQueries; i++ {
-		sumOrig = api.Add(sumOrig, positions[i])
+		sumSelected = api.Add(sumSelected, selectedPositions[i])
 		sumSorted = api.Add(sumSorted, sortedPositions[i])
 	}
-	api.AssertIsEqual(sumOrig, sumSorted)
+	api.AssertIsEqual(sumSelected, sumSorted)
 
 	return sortedPositions
 }
 
-// verifyMerkleDecommitments verifies Merkle tree decommitments for all trees.
+// verifyMerkleDecommitments verifies Merkle tree decommitments for all commitment trees.
+//
+// SECURITY CRITICAL: This function verifies that queried trace values match their
+// commitments. Both stwo (Rust) and stwo-cairo implement this check.
+//
+// The verification algorithm (from stwo's verifier.rs lines 85-203):
+// 1. For each tree, process layers from leaves to root
+// 2. Hash leaf values (column witnesses) at query positions
+// 3. At each level, detect sibling queries (shared witnesses)
+// 4. Use hash witnesses for nodes without sibling queries
+// 5. Verify computed root matches the commitment
+//
+// IMPORTANT: Query positions are in the FRI domain (size 2^friLogSize). For each
+// commitment tree with column log_size, we need to fold the positions by
+// (friLogSize - columnLogSize) to get the correct Merkle tree positions.
 func (c *FullStwoVerifierCircuit) verifyMerkleDecommitments(
 	api frontend.API,
 	m31Chip *mersenne31.M31Chip,
 	blake2sChip *blake2s.Blake2sChip,
 	queryPositions []frontend.Variable,
 ) {
-	// For each tree, verify Merkle decommitments
-	for treeIdx := 0; treeIdx < len(c.Proof.Commitments); treeIdx++ {
-		if treeIdx >= len(c.ColumnLogSizes) || len(c.ColumnLogSizes[treeIdx]) == 0 {
-			continue // Skip empty trees
-		}
-
-		// Get tree height
-		maxLogSize := 0
-		for _, size := range c.ColumnLogSizes[treeIdx] {
-			if size > maxLogSize {
-				maxLogSize = size
-			}
-		}
-		treeHeight := maxLogSize + c.Config.LogBlowupFactor
-
-		if treeIdx < len(c.Proof.Decommitments) {
-			c.verifyTreeDecommitment(
-				api, m31Chip, blake2sChip,
-				treeIdx,
-				treeHeight,
-				queryPositions,
-			)
-		}
-	}
-}
-
-// verifyTreeDecommitment verifies Merkle decommitment for a single tree.
-func (c *FullStwoVerifierCircuit) verifyTreeDecommitment(
-	api frontend.API,
-	m31Chip *mersenne31.M31Chip,
-	blake2sChip *blake2s.Blake2sChip,
-	treeIdx int,
-	treeHeight int,
-	queryPositions []frontend.Variable,
-) {
-	decommitment := c.Proof.Decommitments[treeIdx]
-	commitment := c.Proof.Commitments[treeIdx]
-
-	if len(decommitment.HashWitness) == 0 {
-		return // Empty decommitment
+	numTrees := len(c.Proof.Commitments)
+	if numTrees == 0 || len(c.ColumnLogSizes) == 0 {
+		return
 	}
 
-	// For each query, verify the Merkle path
 	numQueries := len(queryPositions)
-	witnessIdx := 0
+	if numQueries == 0 {
+		return
+	}
 
-	for q := 0; q < numQueries; q++ {
-		if witnessIdx >= len(decommitment.HashWitness) {
-			break
+	// Compute FRI domain log_size: max column log_size + blowup factor
+	friLogSize := c.getMaxLogSize() + int(c.Config.LogBlowupFactor)
+
+	// Verify each commitment tree
+	// The last tree is the composition polynomial - handled differently
+	// Trees: 0=preprocessed, 1=trace, 2=interaction
+	for treeIdx := 0; treeIdx < numTrees-1; treeIdx++ {
+		if treeIdx >= len(c.Proof.Decommitments) {
+			continue
 		}
-
-		// Get values at this query position
-		values := c.getQueriedValuesForTree(treeIdx, q)
-		if len(values) == 0 {
+		if treeIdx >= len(c.ColumnLogSizes) || len(c.ColumnLogSizes[treeIdx]) == 0 {
 			continue
 		}
 
-		// Compute leaf hash
-		leafHash := c.computeLeafHash(blake2sChip, m31Chip, values)
+		// Get max column log_size for this tree
+		columnLogSize := c.ColumnLogSizes[treeIdx][0]
+		for _, ls := range c.ColumnLogSizes[treeIdx] {
+			if ls > columnLogSize {
+				columnLogSize = ls
+			}
+		}
 
-		// Verify Merkle path
-		currentHash := leafHash
-		position := queryPositions[q]
+		// Compute number of folds to adapt query positions to tree size
+		// Tree uses extended domain: columnLogSize + blowupFactor
+		treeLogSize := columnLogSize + int(c.Config.LogBlowupFactor)
+		numFolds := friLogSize - treeLogSize
 
-		for level := 0; level < treeHeight; level++ {
-			if witnessIdx >= len(decommitment.HashWitness) {
-				break
+		// Fold query positions to get Merkle tree positions
+		treeQueryPositions := make([]frontend.Variable, numQueries)
+		if numFolds > 0 {
+			for q := 0; q < numQueries; q++ {
+				// Position >> numFolds
+				bits := api.ToBinary(queryPositions[q], friLogSize)
+				// Take upper bits (skip lower numFolds bits)
+				upperBits := bits[numFolds:]
+				treeQueryPositions[q] = api.FromBinary(upperBits...)
+			}
+		} else {
+			copy(treeQueryPositions, queryPositions)
+		}
+
+		c.verifyTreeMerkle(
+			api, m31Chip, blake2sChip,
+			c.Proof.Commitments[treeIdx],
+			c.Proof.Decommitments[treeIdx],
+			treeQueryPositions,
+			c.ColumnLogSizes[treeIdx],
+			treeIdx,
+			c.Config.LogBlowupFactor,
+		)
+	}
+}
+
+// verifyTreeMerkle verifies Merkle paths for a single commitment tree.
+// This implements the stwo Merkle verification algorithm matching the sequential
+// witness consumption pattern from stwo-cairo.
+//
+// The algorithm:
+// 1. Hash leaf values at sorted query positions
+// 2. Go up level by level, processing parent nodes in sorted order
+// 3. For each parent node, get left/right children from computed set or witness
+// 4. Witnesses are consumed sequentially in sorted node order
+//
+// The QueriedValues structure is organized as:
+// - QueriedValues[treeIdx].Values contains ALL queried values for tree treeIdx
+// - Within a tree, values are in query-major order: values[q * numCols + col]
+func (c *FullStwoVerifierCircuit) verifyTreeMerkle(
+	api frontend.API,
+	m31Chip *mersenne31.M31Chip,
+	blake2sChip *blake2s.Blake2sChip,
+	commitment blake2s.Blake2sHash,
+	decommitment merkle.MerkleDecommitment,
+	queryPositions []frontend.Variable, // Already sorted
+	columnLogSizes []int,
+	treeIdx int,
+	logBlowupFactor int,
+) {
+	if len(columnLogSizes) == 0 {
+		return
+	}
+
+	// Get max log size for columns in this tree
+	maxLogSize := columnLogSizes[0]
+	for _, ls := range columnLogSizes {
+		if ls > maxLogSize {
+			maxLogSize = ls
+		}
+	}
+	// The tree height is the domain size which includes blowup factor
+	logDomainSize := maxLogSize + logBlowupFactor
+	_ = maxLogSize // Still needed for computing columns at max size
+
+	numQueries := len(queryPositions)
+	numColumns := len(columnLogSizes)
+
+	// Skip if no hash witness (empty tree)
+	if len(decommitment.HashWitness) == 0 {
+		return
+	}
+
+	// Verify we have queried values for this tree
+	if treeIdx >= len(c.Proof.QueriedValues) {
+		return
+	}
+	treeQueriedValues := c.Proof.QueriedValues[treeIdx].Values
+	expectedNumValues := numQueries * numColumns
+	if len(treeQueriedValues) < expectedNumValues {
+		return
+	}
+
+	// Count columns at max log size
+	numColsAtMaxSize := 0
+	for _, ls := range columnLogSizes {
+		if ls == maxLogSize {
+			numColsAtMaxSize++
+		}
+	}
+
+	// ========================================
+	// Step 1: Compute leaf hashes (in sorted query order)
+	// ========================================
+	// Query positions are already sorted, so we process them in order.
+	// QueriedValues layout: values[q * numColumns + col]
+	leafHashes := make([]blake2s.Blake2sHash, numQueries)
+	for q := 0; q < numQueries; q++ {
+		valuesForLeaf := make([]frontend.Variable, numColsAtMaxSize)
+		for col := 0; col < numColsAtMaxSize; col++ {
+			valueIdx := q*numColumns + col
+			if valueIdx < len(treeQueriedValues) {
+				reduced := m31Chip.ReduceSlow(treeQueriedValues[valueIdx])
+				valuesForLeaf[col] = reduced.Value
+			} else {
+				valuesForLeaf[col] = frontend.Variable(0)
+			}
+		}
+		leafHashes[q] = blake2sChip.HashLeaf(valuesForLeaf)
+	}
+
+	// ========================================
+	// Step 2: Use hint to get witness layout
+	// ========================================
+	// The hint computes the sequential witness consumption pattern.
+	// For each query at each level, it returns the witness index to use
+	// (or -1 if the sibling was computed from another query).
+	hintInputs := make([]frontend.Variable, numQueries+2)
+	for q := 0; q < numQueries; q++ {
+		hintInputs[q] = queryPositions[q]
+	}
+	hintInputs[numQueries] = frontend.Variable(logDomainSize) // Tree height
+	hintInputs[numQueries+1] = frontend.Variable(numColumns)
+
+	hintOutputLen := numQueries * logDomainSize
+	hintOutputs, err := api.Compiler().NewHint(merkleWitnessLayoutHint, hintOutputLen, hintInputs...)
+	if err != nil {
+		api.AssertIsEqual(1, 0)
+		return
+	}
+
+	// Parse: witnessLayout[q][level] = witness index or -1 if sibling computed
+	witnessLayout := make([][]frontend.Variable, numQueries)
+	for q := 0; q < numQueries; q++ {
+		witnessLayout[q] = make([]frontend.Variable, logDomainSize)
+		for level := 0; level < logDomainSize; level++ {
+			witnessLayout[q][level] = hintOutputs[q*logDomainSize+level]
+		}
+	}
+
+	// ========================================
+	// Step 3: Process Merkle tree level by level
+	// ========================================
+	currentHashes := leafHashes
+	currentPositions := make([]frontend.Variable, numQueries)
+	copy(currentPositions, queryPositions)
+
+	for level := 0; level < logDomainSize; level++ {
+		nextHashes := make([]blake2s.Blake2sHash, numQueries)
+
+		for q := 0; q < numQueries; q++ {
+			// Extract LSB to determine left/right child
+			bits := api.ToBinary(currentPositions[q], logDomainSize-level)
+			isRightChild := bits[0]
+
+			// Compute sibling position (XOR with 1)
+			siblingPos := api.Select(
+				isRightChild,
+				api.Sub(currentPositions[q], 1),
+				api.Add(currentPositions[q], 1),
+			)
+
+			// Check if sibling is another query at this level
+			siblingHash := blake2s.ZeroHash()
+			hasSiblingQuery := frontend.Variable(0)
+
+			for other := 0; other < numQueries; other++ {
+				if other != q {
+					isSibling := api.IsZero(api.Sub(currentPositions[other], siblingPos))
+					siblingHash = blake2sChip.Select(isSibling, currentHashes[other], siblingHash)
+					hasSiblingQuery = api.Or(hasSiblingQuery, isSibling)
+				}
 			}
 
-			sibling := decommitment.HashWitness[witnessIdx]
-			witnessIdx++
+			// Get witness hash using the computed index
+			witnessIdx := witnessLayout[q][level]
+			witnessHash := blake2s.ZeroHash()
 
-			// Get position bit at this level
-			bits := api.ToBinary(position, treeHeight)
-			bit := bits[level]
+			// Use multiplexer to select the correct witness
+			for w := 0; w < len(decommitment.HashWitness); w++ {
+				isThisWitness := api.IsZero(api.Sub(witnessIdx, frontend.Variable(w)))
+				witnessHash = blake2sChip.Select(isThisWitness, decommitment.HashWitness[w], witnessHash)
+			}
 
-			// Select left/right based on bit
-			left := blake2sChip.Select(bit, sibling, currentHash)
-			right := blake2sChip.Select(bit, currentHash, sibling)
+			// Use sibling from queries if available, otherwise from witness
+			sibling := blake2sChip.Select(hasSiblingQuery, siblingHash, witnessHash)
 
-			// Hash parent
-			currentHash = blake2sChip.HashNode(left, right)
+			// Order left/right based on position parity
+			left := blake2sChip.Select(isRightChild, sibling, currentHashes[q])
+			right := blake2sChip.Select(isRightChild, currentHashes[q], sibling)
+
+			// Hash parent node
+			nextHashes[q] = blake2sChip.HashNode(left, right)
 		}
 
-		// Verify root matches commitment
-		blake2sChip.AssertEqual(currentHash, commitment)
-	}
-}
-
-// getQueriedValuesForTree gets queried values for a specific tree and query.
-func (c *FullStwoVerifierCircuit) getQueriedValuesForTree(treeIdx, queryIdx int) []mersenne31.M31Variable {
-	if treeIdx >= len(c.Proof.QueriedValues) {
-		return nil
-	}
-	tree := c.Proof.QueriedValues[treeIdx]
-	if len(tree.Values) == 0 {
-		return nil
-	}
-
-	// Calculate number of columns
-	numCols := 1
-	if treeIdx < len(c.ColumnLogSizes) {
-		numCols = len(c.ColumnLogSizes[treeIdx])
-		if numCols == 0 {
-			numCols = 1
+		currentHashes = nextHashes
+		for q := 0; q < numQueries; q++ {
+			// Integer division by 2 = right shift = drop LSB
+			// NOTE: api.Div is FIELD division, not integer division!
+			bits := api.ToBinary(currentPositions[q], logDomainSize-level)
+			if len(bits) > 1 {
+				currentPositions[q] = api.FromBinary(bits[1:]...)
+			} else {
+				currentPositions[q] = frontend.Variable(0)
+			}
 		}
 	}
 
-	// Get values for this query
-	startIdx := queryIdx * numCols
-	endIdx := startIdx + numCols
-	if endIdx > len(tree.Values) {
-		return nil
+	// ========================================
+	// Step 4: Verify all paths lead to same root
+	// ========================================
+	for q := 0; q < numQueries; q++ {
+		blake2sChip.AssertEqual(currentHashes[q], commitment)
 	}
-
-	return tree.Values[startIdx:endIdx]
-}
-
-// computeLeafHash computes the Merkle leaf hash for column values.
-func (c *FullStwoVerifierCircuit) computeLeafHash(
-	blake2sChip *blake2s.Blake2sChip,
-	m31Chip *mersenne31.M31Chip,
-	values []mersenne31.M31Variable,
-) blake2s.Blake2sHash {
-	// Convert M31 values to words
-	words := make([]frontend.Variable, len(values))
-	for i, val := range values {
-		reduced := m31Chip.ReduceSlow(val)
-		words[i] = reduced.Value
-	}
-
-	return blake2sChip.HashLeaf(words)
 }
 
 // computeFriQuotientAnswers computes the FRI first layer quotient evaluations.
@@ -709,9 +1118,14 @@ func (c *FullStwoVerifierCircuit) getCirclePointForQuery(
 		Y: mersenne31.M31Variable{Value: result[1], UpperBound: new(big.Int).Set(mersenne31.M31Modulus)},
 	}
 
-	// Range check and verify on circle
+	// Range check the coordinates
 	circleChip.M31Chip().ReduceSlow(p.X)
 	circleChip.M31Chip().ReduceSlow(p.Y)
+
+	// SECURITY: Verify the point is on the circle: x^2 + y^2 = 1
+	// This is critical - without this check, a malicious prover could provide
+	// arbitrary points not on the circle, breaking the soundness of the verification.
+	circleChip.AssertOnCircle(p)
 
 	return p
 }
@@ -765,6 +1179,11 @@ func (c *FullStwoVerifierCircuit) computeQuotientAtPoint(
 	// (since each log size may have a different trace generator)
 
 	result := mersenne31.ZeroQM31()
+	// In stwo's column_line_coeffs:
+	//   let mut alpha = SecureField::one();  // starts at 1
+	//   let line_coeffs = complex_conjugate_line_coeffs(&sample, alpha);  // USE FIRST
+	//   alpha *= random_coeff;  // MULTIPLY AFTER
+	// So the alpha sequence is: 1, random_coeff, random_coeff^2, ...
 	powerOfRandom := mersenne31.OneQM31()
 
 	// Lift queryPoint.y to QM31 once (used for all columns)
@@ -1113,6 +1532,12 @@ func (c *FullStwoVerifierCircuit) verifyFriDecommitment(
 	for layerIdx, layerProof := range c.Proof.FriProof.InnerLayers {
 		alpha := alphas[layerIdx+1]
 
+		// CRITICAL: Save original evals BEFORE any modifications in this layer
+		// This is needed because the fold loop modifies currentEvals[q] in place,
+		// but later iterations need the ORIGINAL values to find sibling values.
+		originalEvals := make([]mersenne31.QM31Variable, numQueries)
+		copy(originalEvals, currentEvals)
+
 		// For each query, we need to find the sibling value
 		// First, compute which fold subset each query belongs to
 		foldedPositions := make([]frontend.Variable, numQueries)
@@ -1157,8 +1582,8 @@ func (c *FullStwoVerifierCircuit) verifyFriDecommitment(
 				if other != q {
 					// Check if currentPositions[other] == siblingPos
 					isMatch := api.IsZero(api.Sub(currentPositions[other], siblingPos))
-					// If match, use that query's current eval as sibling value
-					siblingValue = m31Chip.SelectQM31(isMatch, currentEvals[other], siblingValue)
+					// If match, use that query's ORIGINAL eval as sibling value
+					siblingValue = m31Chip.SelectQM31(isMatch, originalEvals[other], siblingValue)
 					foundSibling = api.Or(foundSibling, isMatch)
 				}
 			}
@@ -1226,9 +1651,38 @@ func (c *FullStwoVerifierCircuit) verifyFriDecommitment(
 		)
 
 		// Now fold each query
+		// CRITICAL: Use originalEvals (saved at start of layer) for all lookups,
+		// since currentEvals is modified during the loop.
+		//
+		// When building the subset [v0, v1]:
+		// - v0 is the value at the even position (2k)
+		// - v1 is the value at the odd position (2k+1)
+		// All queries in the same fold subset use the SAME [v0, v1].
 		for q := 0; q < numQueries; q++ {
-			ourValue := currentEvals[q]
+			// For our position, use the value from the FIRST query at this position
+			// (for deduplication when multiple queries are at the same position)
+			ourValue := originalEvals[q]
+			for earlier := 0; earlier < q; earlier++ {
+				samePos := api.IsZero(api.Sub(currentPositions[earlier], currentPositions[q]))
+				ourValue = m31Chip.SelectQM31(samePos, originalEvals[earlier], ourValue)
+			}
+
+			// For sibling position, use the value from the FIRST query at sibling position
+			// (if any), otherwise use witness (which was already set in siblingValues)
 			siblingValue := siblingValues[q]
+			for earlier := 0; earlier < numQueries; earlier++ {
+				if earlier != q {
+					siblingPos := api.Add(api.Mul(foldedPositions[q], 2), api.Sub(1, positionLSBs[q]))
+					samePos := api.IsZero(api.Sub(currentPositions[earlier], siblingPos))
+					// Use the earlier query's ORIGINAL value (for deduplication)
+					earlierValue := originalEvals[earlier]
+					for e2 := 0; e2 < earlier; e2++ {
+						samePos2 := api.IsZero(api.Sub(currentPositions[e2], currentPositions[earlier]))
+						earlierValue = m31Chip.SelectQM31(samePos2, originalEvals[e2], earlierValue)
+					}
+					siblingValue = m31Chip.SelectQM31(samePos, earlierValue, siblingValue)
+				}
+			}
 
 			// Order v0, v1 based on position LSB
 			// If LSB=0 (even position): our value is v0 (at x), sibling is v1 (at -x)
@@ -1255,207 +1709,85 @@ func (c *FullStwoVerifierCircuit) verifyFriDecommitment(
 	}
 
 	// ========================================
-	// Last Layer: Verify constant polynomial
+	// Last Layer: Verify polynomial evaluation
 	// ========================================
-
-	if len(c.Proof.FriProof.LastLayerPoly) > 0 {
+	// The last layer polynomial has degree up to 2^log_last_layer_deg - 1.
+	// With log_last_layer_deg=0 and log_blowup=1, we have a domain of size 2
+	// and a degree-1 polynomial (2 coefficients).
+	//
+	// We need to evaluate the polynomial at each query's x-coordinate:
+	// poly(x) = coeffs[0] + coeffs[1] * x + coeffs[2] * x^2 + ...
+	//
+	// For a degree-1 polynomial: poly(x) = coeffs[0] + coeffs[1] * x
+	if len(c.Proof.FriProof.LastLayerPoly) == 1 {
+		// Constant polynomial - all evaluations should equal the constant
 		lastLayerValue := c.Proof.FriProof.LastLayerPoly[0]
-
-		// All folded evaluations should equal the constant
 		for q := 0; q < numQueries; q++ {
 			m31Chip.AssertEqQM31(currentEvals[q], lastLayerValue)
+		}
+	} else if len(c.Proof.FriProof.LastLayerPoly) > 1 {
+		// Non-constant polynomial - evaluate at each query's x-coordinate
+		// The last layer domain has log_size = currentLogSize (after all folding)
+		for q := 0; q < numQueries; q++ {
+			// Get x-coordinate for this query position in the last layer domain
+			x := c.getLineX(m31Chip, currentPositions[q], currentLogSize)
+
+			// Evaluate polynomial using Horner's method:
+			// poly(x) = c[0] + x * (c[1] + x * (c[2] + ...))
+			// We iterate from highest to lowest coefficient
+			coeffs := c.Proof.FriProof.LastLayerPoly
+			result := coeffs[len(coeffs)-1]
+			for i := len(coeffs) - 2; i >= 0; i-- {
+				// result = coeffs[i] + x * result
+				xResult := m31Chip.MulQM31ByM31(result, x)
+				result = m31Chip.AddQM31(coeffs[i], xResult)
+			}
+
+			// Compare folded evaluation with polynomial evaluation
+			m31Chip.AssertEqQM31(currentEvals[q], result)
 		}
 	}
 }
 
 // getLineX computes the x-coordinate for a position in the line domain.
+// The line domain is derived from the circle domain.
+//
+// SECURITY: We use a hint to compute the circle point (x, y) and verify that
+// x² + y² = 1 to ensure the point is on the circle. The correctness of the
+// specific point (that it matches the position) is indirectly verified through
+// the FRI folding and Merkle verification - if x is wrong, the folded values
+// will mismatch the committed values.
 func (c *FullStwoVerifierCircuit) getLineX(
 	m31Chip *mersenne31.M31Chip,
 	position frontend.Variable,
 	logDomainSize int,
 ) mersenne31.M31Variable {
-	// The line domain is derived from the circle domain
-	// x = cos(2*pi*i / domain_size)
-	// For efficiency, use precomputed twiddles or hints
-
-	// Simplified: use hint to compute
+	// Get both x and y from hint so we can verify the point is on the circle
 	result, _ := m31Chip.API().Compiler().NewHint(
-		lineXHint, 1, position, frontend.Variable(logDomainSize),
+		lineXHint, 2, position, frontend.Variable(logDomainSize),
 	)
 
-	return mersenne31.M31Variable{
+	x := mersenne31.M31Variable{
 		Value:      result[0],
 		UpperBound: new(big.Int).Set(mersenne31.M31Modulus),
 	}
-}
-
-// verifyFriLayerMerkle verifies Merkle decommitment for a FRI layer using witness sharing.
-// This implements the Rust stwo algorithm where witnesses are shared between queries
-// that have common ancestors in the Merkle tree.
-//
-// The algorithm processes level by level from leaves to root:
-// 1. Compute leaf hashes for all query positions
-// 2. At each level, check if sibling is another query (share) or needs witness
-// 3. Witnesses are consumed in ascending node index order within each level
-func (c *FullStwoVerifierCircuit) verifyFriLayerMerkle(
-	api frontend.API,
-	m31Chip *mersenne31.M31Chip,
-	blake2sChip *blake2s.Blake2sChip,
-	commitment blake2s.Blake2sHash,
-	computedValues []mersenne31.QM31Variable,
-	siblingValues []mersenne31.QM31Variable,
-	positionLSBs []frontend.Variable,
-	foldedPositions []frontend.Variable,
-	decommitment merkle.MerkleDecommitment,
-	logDomainSize int,
-) {
-	if logDomainSize == 0 || len(computedValues) == 0 {
-		return
+	y := mersenne31.M31Variable{
+		Value:      result[1],
+		UpperBound: new(big.Int).Set(mersenne31.M31Modulus),
 	}
 
-	numQueries := len(computedValues)
+	// Range check coordinates
+	m31Chip.ReduceSlow(x)
+	m31Chip.ReduceSlow(y)
 
-	// Step 1: Compute leaf hashes for all queries
-	leafHashes := make([]blake2s.Blake2sHash, numQueries)
-	for q := 0; q < numQueries; q++ {
-		// Order v0, v1 based on position LSB
-		v0 := m31Chip.SelectQM31(positionLSBs[q], siblingValues[q], computedValues[q])
-		v1 := m31Chip.SelectQM31(positionLSBs[q], computedValues[q], siblingValues[q])
-		leafHashes[q] = c.hashQM31Pair(blake2sChip, m31Chip, v0, v1)
-	}
+	// SECURITY: Verify the point is on the circle: x² + y² = 1
+	// This ensures the prover can't provide arbitrary x values.
+	xSq := m31Chip.MulM31(x, x)
+	ySq := m31Chip.MulM31(y, y)
+	sum := m31Chip.AddM31(xSq, ySq)
+	m31Chip.AssertEqM31(sum, mersenne31.One())
 
-	// Step 2: Process level by level
-	currentHashes := leafHashes
-	currentPositions := make([]frontend.Variable, numQueries)
-	copy(currentPositions, foldedPositions)
-
-	// Use a hint to get the witness indices for each (query, level) pair
-	// This avoids complex in-circuit witness offset computation
-	witnessIndices := c.computeFriMerkleWitnessIndices(api, foldedPositions, logDomainSize, len(decommitment.HashWitness))
-
-	for level := 0; level < logDomainSize; level++ {
-		nextHashes := make([]blake2s.Blake2sHash, numQueries)
-		nextPositions := make([]frontend.Variable, numQueries)
-
-		for q := 0; q < numQueries; q++ {
-			// Get position bit at this level
-			bitsNeeded := logDomainSize - level
-			if bitsNeeded < 1 {
-				bitsNeeded = 1
-			}
-			bits := api.ToBinary(currentPositions[q], bitsNeeded)
-			isRightChild := bits[0]
-
-			// Parent position = currentPosition >> 1
-			if bitsNeeded > 1 {
-				nextPositions[q] = api.FromBinary(bits[1:]...)
-			} else {
-				nextPositions[q] = frontend.Variable(0)
-			}
-
-			// Check if sibling is another query at this level
-			siblingHash := blake2s.ZeroHash()
-			hasSiblingQuery := frontend.Variable(0)
-
-			for other := 0; other < numQueries; other++ {
-				if other != q {
-					// Sibling position = currentPos XOR 1
-					// Check if other query is at sibling position
-					// Sibling of position P is: P^1 = P + 1 if even, P - 1 if odd
-					diff := api.Sub(currentPositions[other], currentPositions[q])
-					// If diff == 1 and q is even, or diff == -1 and q is odd, they're siblings
-					isEven := api.Sub(1, isRightChild)
-					diffIsOne := api.IsZero(api.Sub(diff, 1))
-					diffIsMinusOne := api.IsZero(api.Add(diff, 1))
-					isSibling := api.Or(
-						api.Mul(isEven, diffIsOne),
-						api.Mul(isRightChild, diffIsMinusOne),
-					)
-					siblingHash = blake2sChip.Select(isSibling, currentHashes[other], siblingHash)
-					hasSiblingQuery = api.Or(hasSiblingQuery, isSibling)
-				}
-			}
-
-			// If no sibling query, use witness
-			needsWitness := api.Sub(1, hasSiblingQuery)
-
-			// Get witness index from precomputed hint
-			witnessIdx := witnessIndices[level*numQueries+q]
-
-			// Select the witness hash
-			witnessHash := blake2s.ZeroHash()
-			for w := 0; w < len(decommitment.HashWitness); w++ {
-				isThisWitness := api.IsZero(api.Sub(witnessIdx, frontend.Variable(w)))
-				witnessHash = blake2sChip.Select(isThisWitness, decommitment.HashWitness[w], witnessHash)
-			}
-
-			// Use witness if needed, otherwise use sibling query's hash
-			siblingHash = blake2sChip.Select(needsWitness, witnessHash, siblingHash)
-
-			// Compute parent hash
-			left := blake2sChip.Select(isRightChild, siblingHash, currentHashes[q])
-			right := blake2sChip.Select(isRightChild, currentHashes[q], siblingHash)
-			nextHashes[q] = blake2sChip.HashNode(left, right)
-		}
-
-		currentHashes = nextHashes
-		currentPositions = nextPositions
-	}
-
-	// All queries should reach the same root
-	for q := 0; q < numQueries; q++ {
-		blake2sChip.AssertEqual(currentHashes[q], commitment)
-	}
-}
-
-// computeFriMerkleWitnessIndices uses a hint to compute witness indices for each (query, level).
-func (c *FullStwoVerifierCircuit) computeFriMerkleWitnessIndices(
-	api frontend.API,
-	positions []frontend.Variable,
-	logDomainSize int,
-	numWitnesses int,
-) []frontend.Variable {
-	numQueries := len(positions)
-	result := make([]frontend.Variable, numQueries*logDomainSize)
-
-	// Use hint to compute the indices
-	inputs := make([]frontend.Variable, numQueries+2)
-	for i, pos := range positions {
-		inputs[i] = pos
-	}
-	inputs[numQueries] = frontend.Variable(logDomainSize)
-	inputs[numQueries+1] = frontend.Variable(numWitnesses)
-
-	hintOutputs, err := api.Compiler().NewHint(friMerkleWitnessIndicesHint, numQueries*logDomainSize, inputs...)
-	if err != nil {
-		// Fallback: return sequential indices (will fail verification but compile)
-		for i := range result {
-			result[i] = frontend.Variable(i % numWitnesses)
-		}
-		return result
-	}
-
-	return hintOutputs
-}
-
-// hashQM31Pair hashes a pair of QM31 values for FRI Merkle leaves.
-// DEPRECATED: Use hashSingleQM31 instead - each leaf contains one QM31.
-func (c *FullStwoVerifierCircuit) hashQM31Pair(
-	blake2sChip *blake2s.Blake2sChip,
-	m31Chip *mersenne31.M31Chip,
-	v0, v1 mersenne31.QM31Variable,
-) blake2s.Blake2sHash {
-	words := make([]frontend.Variable, 8)
-	for i := 0; i < 4; i++ {
-		reduced0 := m31Chip.ReduceSlow(v0.Value[i])
-		words[i] = reduced0.Value
-	}
-	for i := 0; i < 4; i++ {
-		reduced1 := m31Chip.ReduceSlow(v1.Value[i])
-		words[4+i] = reduced1.Value
-	}
-
-	return blake2sChip.HashLeaf(words)
+	return x
 }
 
 // hashSingleQM31 hashes a single QM31 value (4 M31 components) for a Merkle leaf.
@@ -1664,7 +1996,10 @@ func (c *FullStwoVerifierCircuit) verifyFriFirstLayerMerkle(
 }
 
 // friFirstLayerMerkleHint computes the decommitment structure for FRI first layer.
+var friHintCallCount = 0
+
 func friFirstLayerMerkleHint(q *big.Int, inputs []*big.Int, outputs []*big.Int) error {
+	friHintCallCount++
 	numQueries := len(inputs) - 1
 	logDomainSize := int(inputs[numQueries].Int64())
 
@@ -1673,6 +2008,10 @@ func friFirstLayerMerkleHint(q *big.Int, inputs []*big.Int, outputs []*big.Int) 
 	for i := 0; i < numQueries; i++ {
 		queryPositions[i] = int(inputs[i].Int64())
 	}
+
+	// Force output
+	_, _ = os.Stderr.WriteString(fmt.Sprintf("[friFirstLayerMerkleHint #%d] logDomainSize=%d, queryPositions=%v\n", friHintCallCount, logDomainSize, queryPositions))
+	os.Stderr.Sync()
 
 	// Compute decommit positions (for fold_step=1, each query touches 2 positions)
 	type decommitInfo struct {
@@ -1869,54 +2208,203 @@ func friFirstLayerMerkleHint(q *big.Int, inputs []*big.Int, outputs []*big.Int) 
 		}
 	}
 
+	// Debug logging
+	fmt.Fprintf(os.Stderr, "[friFirstLayerMerkleHint #%d] Outputs:\n", friHintCallCount)
+	for i := 0; i < expectedPositions; i++ {
+		pos := outputs[i*4].Int64()
+		vt := outputs[i*4+1].Int64()
+		vi := outputs[i*4+2].Int64()
+		valid := outputs[i*4+3].Int64()
+		fmt.Fprintf(os.Stderr, "  [%d] pos=%d valueType=%d valueIndex=%d isValid=%d\n", i, pos, vt, vi, valid)
+	}
+
 	return nil
 }
 
 // verifyCompositionPolynomial verifies the AIR composition polynomial evaluation.
+// This is the critical OODS (Out-Of-Domain Sampling) check that ensures AIR constraints are satisfied.
+//
+// The verification equation is: H(z) == Σ_i α^i * C_i(mask(z)) / V(z)
+// where:
+//   - H(z) is the composition polynomial at OOD point z (extracted from sampled values)
+//   - α is the random coefficient for linear combination
+//   - C_i are the AIR constraints evaluated using sampled mask values
+//   - V(z) is the coset vanishing polynomial at z
+//
+// verifyCompositionPolynomial verifies that the composition polynomial evaluation
+// matches the expected value computed from AIR constraints.
+// NOTE: If AIRConstraints is nil, this check is SKIPPED.
+// This is useful for testing but NOT SECURE for production use.
 func (c *FullStwoVerifierCircuit) verifyCompositionPolynomial(
+	api frontend.API,
 	m31Chip *mersenne31.M31Chip,
 	circleChip *circle.CircleChip,
 	oodPoint circle.CirclePointQM31,
 	randomCoeff mersenne31.QM31Variable,
 ) {
-	// The composition polynomial check verifies that:
-	// sum_i random^i * constraint_i(ood_point) = composition_eval
+	// If no AIR constraints provided, skip composition verification.
+	// WARNING: This is NOT SECURE for production - it means any proof will pass!
+	// This mode is only for testing the circuit structure.
+	if c.AIRConstraints == nil || len(c.AIRConstraints.Constraints) == 0 {
+		// Skip composition polynomial verification
+		return
+	}
 
-	// For a generic verifier, this is provided as part of the proof
-	// The composition evaluation should be in the sampled values
+	// Verify we have enough sampled values
+	if len(c.Proof.SampledValues) < 2 {
+		api.AssertIsEqual(frontend.Variable(1), frontend.Variable(0))
+		return
+	}
 
-	// Get composition evaluation from last tree (typically)
-	if len(c.Proof.SampledValues) > 0 {
-		lastTree := c.Proof.SampledValues[len(c.Proof.SampledValues)-1]
-		if len(lastTree.Columns) > 0 && len(lastTree.Columns[0].Values) > 0 {
-			// The composition evaluation is stored here
-			// For a full verifier, we would evaluate the AIR constraints
-			// and compare with this value
-			_ = lastTree.Columns[0].Values[0]
+	compositionTree := c.Proof.SampledValues[len(c.Proof.SampledValues)-1]
+	if len(compositionTree.Columns) < 8 {
+		api.AssertIsEqual(frontend.Variable(1), frontend.Variable(0))
+		return
+	}
+
+	// ========================================
+	// Step 1: Extract composition evaluation from sampled values
+	// ========================================
+	// The composition polynomial is split into 8 columns:
+	// - Columns 0-3 represent "left" QM31
+	// - Columns 4-7 represent "right" QM31
+	// Recombine: composition = left + x^{2^{log_size-2}} * right
+
+	v0 := compositionTree.Columns[0].Values[0]
+	v1 := compositionTree.Columns[1].Values[0]
+	v2 := compositionTree.Columns[2].Values[0]
+	v3 := compositionTree.Columns[3].Values[0]
+	v4 := compositionTree.Columns[4].Values[0]
+	v5 := compositionTree.Columns[5].Values[0]
+	v6 := compositionTree.Columns[6].Values[0]
+	v7 := compositionTree.Columns[7].Values[0]
+
+	// Combine partial evaluations into QM31 values using from_partial_evals
+	// The 8 composition columns represent 2 QM31 values (left and right),
+	// each split into 4 base-field components via the basis {1, i, j, ij}
+	// where j = u (the QM31 extension element with u^2 = 2+i).
+	left := m31Chip.FromPartialEvals([4]mersenne31.QM31Variable{v0, v1, v2, v3})
+	right := m31Chip.FromPartialEvals([4]mersenne31.QM31Variable{v4, v5, v6, v7})
+
+	// Get composition log size
+	compositionLogSize := c.getMaxLogSize() + 1
+	if c.AIRConstraints.CompositionLogDegreeBound > 0 {
+		compositionLogSize = int(c.AIRConstraints.CompositionLogDegreeBound)
+	}
+
+	// Compute x^{2^{log_size-2}} using repeated circle doubling
+	xPower := oodPoint.X
+	for i := 0; i < compositionLogSize-2; i++ {
+		xSquared := m31Chip.MulQM31(xPower, xPower)
+		xDoubled := m31Chip.AddQM31(xSquared, xSquared)
+		one := mersenne31.OneQM31()
+		xPower = m31Chip.SubQM31(xDoubled, one)
+	}
+
+	rightScaled := m31Chip.MulQM31(xPower, right)
+	compositionEval := m31Chip.AddQM31(left, rightScaled)
+
+	// ========================================
+	// Step 2: Build sampled values array for constraint evaluator
+	// ========================================
+	// sampledValues[tree][col][offset] = QM31 value
+	sampledValues := make([][][]mersenne31.QM31Variable, len(c.Proof.SampledValues))
+	for treeIdx, tree := range c.Proof.SampledValues {
+		sampledValues[treeIdx] = make([][]mersenne31.QM31Variable, len(tree.Columns))
+		for colIdx, col := range tree.Columns {
+			sampledValues[treeIdx][colIdx] = col.Values
 		}
 	}
 
-	_ = oodPoint
-	_ = randomCoeff
+	// ========================================
+	// Step 3: Compute vanishing polynomial inverse at OOD point
+	// ========================================
+	// For a CanonicCoset of log_size n, the vanishing polynomial is computed as:
+	// V(p) = double_x^{n-1}(p.x)
+	// where double_x(x) = 2x^2 - 1 (circle x-coordinate doubling).
+	//
+	// This works because:
+	// - CanonicCoset::new(n) creates Coset::odds(n) with initial = G_{2n} and step = G_n
+	// - After rotating by the coset offset (which is identity for canonic cosets),
+	//   we apply n-1 doublings to the x-coordinate
+	// - The resulting value is 0 for all points in the coset
+	traceLogSize := c.getMaxLogSize()
+	vanishing := c.computeCosetVanishing(m31Chip, oodPoint.X, traceLogSize)
+	vanishingInv := m31Chip.InvQM31(vanishing)
+
+	// ========================================
+	// Step 4: Evaluate constraints using generic evaluator
+	// ========================================
+	evaluator := NewConstraintEvaluator(circleChip.API(), m31Chip)
+	expectedComposition := evaluator.EvaluateCompositionPolynomial(
+		c.AIRConstraints,
+		sampledValues,
+		randomCoeff,
+		vanishingInv,
+	)
+
+	// ========================================
+	// Step 5: Assert equality
+	// ========================================
+	m31Chip.AssertEqQM31(compositionEval, expectedComposition)
+}
+
+// getMaxLogSize returns the maximum column log size.
+func (c *FullStwoVerifierCircuit) getMaxLogSize() int {
+	maxLogSize := 0
+	for _, tree := range c.ColumnLogSizes {
+		for _, size := range tree {
+			if size > maxLogSize {
+				maxLogSize = size
+			}
+		}
+	}
+	return maxLogSize
+}
+
+// computeCosetVanishing computes the vanishing polynomial for a CanonicCoset at a given point.
+// For a CanonicCoset of log_size n, this applies the circle doubling formula n-1 times:
+//
+//	double_x(x) = 2x^2 - 1
+//
+// The result is zero for all points in the coset.
+func (c *FullStwoVerifierCircuit) computeCosetVanishing(
+	m31Chip *mersenne31.M31Chip,
+	x mersenne31.QM31Variable,
+	logSize int,
+) mersenne31.QM31Variable {
+	// Apply circle doubling log_size - 1 times
+	// double_x(x) = 2x^2 - 1
+	result := x
+	one := mersenne31.OneQM31()
+	for i := 1; i < logSize; i++ {
+		// x^2
+		xSquared := m31Chip.MulQM31(result, result)
+		// 2x^2
+		xDoubled := m31Chip.AddQM31(xSquared, xSquared)
+		// 2x^2 - 1
+		result = m31Chip.SubQM31(xDoubled, one)
+	}
+	return result
 }
 
 // lineXHint computes the x-coordinate for a line domain position.
 // The line domain is derived from the circle domain after circle-to-line folding.
 // For a position in the line domain, we compute the corresponding circle point's x-coordinate.
 //
-// The formula: For position i in a domain of size 2^logDomainSize, the corresponding
-// circle point index is computed as:
-// 1. Bit-reverse i to get natural index
-// 2. For canonic coset, compute g^(2*index + 1) where g is the circle generator
-// 3. Return the x-coordinate
+// IMPORTANT: This function DOES bit-reverse the position before computing the circle point index.
+// This matches the Rust debug script behavior where line_domain.at(bit_reverse_index(even_pos, ...))
+// is used to get the x-coordinate for FRI inner layer folding.
+//
+// The formula: For position i in a domain of size 2^logDomainSize, we:
+//   1. Bit-reverse position i to get bitReversedPos
+//   2. Compute pointIndex = initial + bitReversedPos * step
+// where initial and step are from the half_odds coset.
 func lineXHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	position := inputs[0].Int64()
 	logDomainSize := int(inputs[1].Int64())
 
 	p := mersenne31.M31Modulus
-
-	// Bit-reverse the position
-	bitReversedPos := bitReverse(int(position), logDomainSize)
 
 	// For FRI inner layers, use half_odds(logDomainSize) coset:
 	//   half_odds(L) = Coset { initial_index: subgroup_gen(L+2), step: subgroup_gen(L) }
@@ -1926,9 +2414,12 @@ func lineXHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	//   initial = 2^(31 - (L + 2)) = 2^(29 - L)
 	//   step = 2^(31 - L)
 	//
-	// The circle point index for position i (after bit reversal) is:
-	//   pointIndex = initial + bitReversedPos * step
-	//              = 2^(29 - L) + bitReversedPos * 2^(31 - L)
+	// IMPORTANT: stwo uses bit_reverse_index before looking up in the domain!
+	// See fold_line: let x = domain.at(bit_reverse_index(i << FOLD_STEP, domain.log_size()));
+	// So we must bit-reverse the position before computing the domain point.
+
+	// Bit-reverse the position within the domain
+	bitReversedPos := bitReverse(int(position), logDomainSize)
 
 	// Initial index for half_odds coset: 2^(29 - logDomainSize)
 	initialIndexBits := 29 - logDomainSize
@@ -1944,7 +2435,7 @@ func lineXHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	}
 	stepIndex := int64(1) << stepIndexBits
 
-	// Circle point index
+	// Circle point index using bit-reversed position
 	circlePointIndex := initialIndex + int64(bitReversedPos)*stepIndex
 
 	// Compute g^circlePointIndex using the circle generator
@@ -1952,9 +2443,17 @@ func lineXHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	gx := big.NewInt(2)
 	gy := big.NewInt(1268011823)
 
-	rx, _ := circlePointPow(gx, gy, uint64(circlePointIndex), p)
+	// Return both x and y so the circuit can verify x² + y² = 1
+	rx, ry := circlePointPow(gx, gy, uint64(circlePointIndex), p)
+
+	// DEBUG: Write to file with computed x
+	f, _ := os.OpenFile("/tmp/fri_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	fmt.Fprintf(f, "[lineXHint] position=%d, logDomainSize=%d, bitReversedPos=%d, circleIdx=%d, x=%s\n",
+		position, logDomainSize, bitReversedPos, circlePointIndex, rx.String())
+	f.Close()
 
 	results[0] = rx
+	results[1] = ry
 	return nil
 }
 
@@ -2015,15 +2514,23 @@ func circlePointPow(gx, gy *big.Int, n uint64, p *big.Int) (*big.Int, *big.Int) 
 }
 
 // circlePointFromQueryHint computes the circle point for a query position in the commitment domain.
-// The domain is in bit-reversed order: domain.at(bit_reverse(position, logSize))
+//
+// IMPORTANT: This function DOES bit-reverse the position before computing the circle point index.
+// This matches the Rust debug script behavior where commitment_domain.at(bit_reverse_index(subset_start, ...))
+// is used to get the twiddle point for the first layer circle-to-line folding.
 func circlePointFromQueryHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	position := inputs[0].Int64()
 	logDomainSize := int(inputs[1].Int64())
 
 	p := mersenne31.M31Modulus
 
-	// Bit-reverse the position to get the natural index
+	// Bit-reverse the position to match Rust debug script behavior
 	bitReversedPos := bitReverse(int(position), logDomainSize)
+
+	// DEBUG: Write to file
+	f, _ := os.OpenFile("/tmp/fri_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	fmt.Fprintf(f, "[circlePointFromQueryHint] position=%d, logDomainSize=%d, bitReversedPos=%d\n", position, logDomainSize, bitReversedPos)
+	f.Close()
 
 	// For canonic CircleDomain with log_size = logDomainSize:
 	// - half_coset.log_size = logDomainSize - 1
@@ -2033,19 +2540,26 @@ func circlePointFromQueryHint(_ *big.Int, inputs []*big.Int, results []*big.Int)
 	// For idx < half_coset.size(): returns half_coset.index_at(idx) = initial + idx * step
 	// For idx >= half_coset.size(): returns -(half_coset.index_at(idx - half_coset.size()))
 	//
-	// This matches Rust's CircleDomain::at() from stwo.
+	// This matches Rust's CircleDomain::index_at() from stwo.
+	// We use the bit-reversed position as the index.
 
 	logHalfCosetSize := logDomainSize - 1
 	halfCosetSize := 1 << logHalfCosetSize
 
-	initialIndexBits := 30 - logDomainSize
+	// For CanonicCoset::new(logDomainSize).circle_domain():
+	// - half_coset = Coset::half_odds(logDomainSize - 1)
+	// - half_coset.initial_index = subgroup_gen(logHalfCosetSize + 2) = 2^(31 - (logHalfCosetSize + 2)) = 2^(29 - logHalfCosetSize)
+	// - half_coset.step_size = subgroup_gen(logHalfCosetSize) = 2^(31 - logHalfCosetSize)
+	//
+	// IMPORTANT: Use logHalfCosetSize for the coset parameters!
+	initialIndexBits := 29 - logHalfCosetSize
 	if initialIndexBits < 0 {
 		initialIndexBits = 0
 	}
 	initialIndex := int64(1) << initialIndexBits
 
-	// step = 2^(32 - logDomainSize)
-	stepIndexBits := 32 - logDomainSize
+	// step = 2^(31 - logHalfCosetSize)
+	stepIndexBits := 31 - logHalfCosetSize
 	if stepIndexBits < 0 {
 		stepIndexBits = 0
 	}
@@ -2057,8 +2571,8 @@ func circlePointFromQueryHint(_ *big.Int, inputs []*big.Int, results []*big.Int)
 		circlePointIndex = initialIndex + int64(bitReversedPos)*stepIndex
 	} else {
 		// Second half: return -half_coset.index_at(idx - halfCosetSize)
-		adjustedIdx := bitReversedPos - halfCosetSize
-		baseIndex := initialIndex + int64(adjustedIdx)*stepIndex
+		adjustedIdx := int64(bitReversedPos - halfCosetSize)
+		baseIndex := initialIndex + adjustedIdx*stepIndex
 		// Negation in CirclePointIndex: (1 << 31) - index
 		circlePointIndex = (int64(1) << 31) - baseIndex
 	}
@@ -2073,3 +2587,4 @@ func circlePointFromQueryHint(_ *big.Int, inputs []*big.Int, results []*big.Int)
 	results[1] = ry
 	return nil
 }
+
