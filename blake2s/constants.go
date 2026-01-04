@@ -25,20 +25,7 @@ var SIGMA = [10][16]int{
 
 // Blake2s parameters
 const (
-	// Number of rounds in Blake2s compression
 	NumRounds = 10
-
-	// Block size in bytes
-	BlockSize = 64
-
-	// Hash output size in bytes
-	HashSize = 32
-
-	// Number of 32-bit words in state
-	StateSize = 8
-
-	// Number of 32-bit words in block
-	BlockWords = 16
 )
 
 // Rotation amounts for Blake2s G function

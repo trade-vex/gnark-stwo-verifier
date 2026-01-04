@@ -90,14 +90,6 @@ func NewM31Const(value string) M31Variable {
 	}
 }
 
-// NewM31FromVariable creates an M31Variable from a frontend.Variable.
-func NewM31FromVariable(v frontend.Variable, upperBound *big.Int) M31Variable {
-	return M31Variable{
-		Value:      v,
-		UpperBound: new(big.Int).Set(upperBound),
-	}
-}
-
 // AddM31 computes a + b in M31.
 // Uses delayed reduction: only reduces when upper bound approaches overflow.
 func (c *M31Chip) AddM31(a, b M31Variable) M31Variable {

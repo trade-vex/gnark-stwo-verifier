@@ -7,7 +7,6 @@ import (
 	"math/big"
 
 	"github.com/consensys/gnark/constraint/solver"
-	"github.com/consensys/gnark/frontend"
 )
 
 func init() {
@@ -18,14 +17,6 @@ func init() {
 type CM31Variable struct {
 	Real M31Variable // a in a + bi
 	Imag M31Variable // b in a + bi
-}
-
-// ZeroCM31 returns the zero element of CM31.
-func ZeroCM31() CM31Variable {
-	return CM31Variable{
-		Real: Zero(),
-		Imag: Zero(),
-	}
 }
 
 // OneCM31 returns the one element of CM31.
@@ -71,31 +62,6 @@ func (c *M31Chip) MulCM31(a, b CM31Variable) CM31Variable {
 	}
 }
 
-// MulCM31ByM31 computes a * b where a is CM31 and b is M31.
-func (c *M31Chip) MulCM31ByM31(a CM31Variable, b M31Variable) CM31Variable {
-	return CM31Variable{
-		Real: c.MulM31(a.Real, b),
-		Imag: c.MulM31(a.Imag, b),
-	}
-}
-
-// ConjCM31 computes the complex conjugate of a.
-// conj(a + bi) = a - bi
-func (c *M31Chip) ConjCM31(a CM31Variable) CM31Variable {
-	return CM31Variable{
-		Real: a.Real,
-		Imag: c.NegM31(a.Imag),
-	}
-}
-
-// NormSqCM31 computes the squared norm of a CM31 element.
-// |a + bi|^2 = a^2 + b^2
-func (c *M31Chip) NormSqCM31(a CM31Variable) M31Variable {
-	aSq := c.MulM31NoReduce(a.Real, a.Real)
-	bSq := c.MulM31NoReduce(a.Imag, a.Imag)
-	return c.AddM31(aSq, bSq)
-}
-
 // InvCM31 computes the multiplicative inverse of a in CM31.
 // (a + bi)^{-1} = (a - bi) / (a^2 + b^2)
 func (c *M31Chip) InvCM31(a CM31Variable) CM31Variable {
@@ -125,22 +91,6 @@ func (c *M31Chip) InvCM31(a CM31Variable) CM31Variable {
 func (c *M31Chip) AssertEqCM31(a, b CM31Variable) {
 	c.AssertEqM31(a.Real, b.Real)
 	c.AssertEqM31(a.Imag, b.Imag)
-}
-
-// SelectCM31 returns a if cond is true, else b.
-func (c *M31Chip) SelectCM31(cond frontend.Variable, a, b CM31Variable) CM31Variable {
-	return CM31Variable{
-		Real: c.SelectM31(cond, a.Real, b.Real),
-		Imag: c.SelectM31(cond, a.Imag, b.Imag),
-	}
-}
-
-// ReduceSlowCM31 performs full modular reduction on both components.
-func (c *M31Chip) ReduceSlowCM31(a CM31Variable) CM31Variable {
-	return CM31Variable{
-		Real: c.ReduceSlow(a.Real),
-		Imag: c.ReduceSlow(a.Imag),
-	}
 }
 
 // InvCM31Hint computes the inverse of a CM31 element.

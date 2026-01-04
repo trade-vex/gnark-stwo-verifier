@@ -35,25 +35,6 @@ func OneQM31() QM31Variable {
 	}
 }
 
-// NewQM31Const creates a constant QM31Variable.
-func NewQM31Const(a, b, c, d string) QM31Variable {
-	return QM31Variable{
-		Value: [4]M31Variable{
-			NewM31Const(a),
-			NewM31Const(b),
-			NewM31Const(c),
-			NewM31Const(d),
-		},
-	}
-}
-
-// NewQM31FromM31 creates a QM31Variable from four M31Variables.
-func NewQM31FromM31(a, b, c, d M31Variable) QM31Variable {
-	return QM31Variable{
-		Value: [4]M31Variable{a, b, c, d},
-	}
-}
-
 // NewQM31FromCM31 creates a QM31Variable from two CM31Variables.
 // QM31 = CM31 + CM31 * u
 func NewQM31FromCM31(first, second CM31Variable) QM31Variable {
@@ -86,18 +67,6 @@ func (c *M31Chip) AddQM31(a, b QM31Variable) QM31Variable {
 			c.AddM31(a.Value[1], b.Value[1]),
 			c.AddM31(a.Value[2], b.Value[2]),
 			c.AddM31(a.Value[3], b.Value[3]),
-		},
-	}
-}
-
-// AddQM31NoReduce computes a + b without reduction.
-func (c *M31Chip) AddQM31NoReduce(a, b QM31Variable) QM31Variable {
-	return QM31Variable{
-		Value: [4]M31Variable{
-			c.AddM31NoReduce(a.Value[0], b.Value[0]),
-			c.AddM31NoReduce(a.Value[1], b.Value[1]),
-			c.AddM31NoReduce(a.Value[2], b.Value[2]),
-			c.AddM31NoReduce(a.Value[3], b.Value[3]),
 		},
 	}
 }
@@ -284,19 +253,6 @@ func (c *M31Chip) FromPartialEvals(evals [4]QM31Variable) QM31Variable {
 	return result
 }
 
-// ComplexConjugate computes the complex conjugate of a QM31 element.
-// For (a + bi) + (c + di)u, the conjugate is (a - bi) + (c - di)u.
-func (c *M31Chip) ComplexConjugate(a QM31Variable) QM31Variable {
-	return QM31Variable{
-		Value: [4]M31Variable{
-			a.Value[0],
-			c.NegM31(a.Value[1]),
-			a.Value[2],
-			c.NegM31(a.Value[3]),
-		},
-	}
-}
-
 // InvQM31 computes the multiplicative inverse of a in QM31.
 func (c *M31Chip) InvQM31(a QM31Variable) QM31Variable {
 	// Use hint to compute the inverse
@@ -344,18 +300,6 @@ func (c *M31Chip) SelectQM31(cond frontend.Variable, a, b QM31Variable) QM31Vari
 			c.SelectM31(cond, a.Value[1], b.Value[1]),
 			c.SelectM31(cond, a.Value[2], b.Value[2]),
 			c.SelectM31(cond, a.Value[3], b.Value[3]),
-		},
-	}
-}
-
-// ReduceSlowQM31 performs full modular reduction on all components.
-func (c *M31Chip) ReduceSlowQM31(a QM31Variable) QM31Variable {
-	return QM31Variable{
-		Value: [4]M31Variable{
-			c.ReduceSlow(a.Value[0]),
-			c.ReduceSlow(a.Value[1]),
-			c.ReduceSlow(a.Value[2]),
-			c.ReduceSlow(a.Value[3]),
 		},
 	}
 }
