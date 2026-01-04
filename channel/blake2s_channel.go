@@ -13,7 +13,6 @@ import (
 
 func init() {
 	solver.RegisterHint(DrawSecureFeltHint)
-	solver.RegisterHint(VerifyPowHint)
 }
 
 // FeltsPerHash is the number of M31 field elements that can be drawn from one Blake2s hash.
@@ -99,22 +98,32 @@ func (c *Blake2sChannel) MixFelts(felts []mersenne31.QM31Variable) {
 			block[j] = buffer[i+j]
 		}
 		blockByteCount += 64 // 16 words * 4 bytes
-		state = c.chip.CompressWithState(state, block, blockByteCount, false)
+		// Check if this is the final block (no remaining words after this)
+		isFinal := (i+16 == len(buffer))
+		if isFinal {
+			// Use actual byte count for the final block
+			state = c.chip.CompressWithState(state, block, uint64(byteCount), true)
+		} else {
+			state = c.chip.CompressWithState(state, block, blockByteCount, false)
+		}
 		i += 16
 	}
 
-	// Handle remaining words with padding and finalize
-	var lastBlock [16]frontend.Variable
+	// Handle remaining words with padding and finalize (only if there are remaining words)
 	remaining := len(buffer) - i
-	for j := 0; j < 16; j++ {
-		if j < remaining {
-			lastBlock[j] = buffer[i+j]
-		} else {
-			lastBlock[j] = frontend.Variable(0)
+	if remaining > 0 {
+		var lastBlock [16]frontend.Variable
+		for j := 0; j < 16; j++ {
+			if j < remaining {
+				lastBlock[j] = buffer[i+j]
+			} else {
+				lastBlock[j] = frontend.Variable(0)
+			}
 		}
+		state = c.chip.CompressWithState(state, lastBlock, uint64(byteCount), true)
 	}
 
-	result := c.chip.CompressWithState(state, lastBlock, uint64(byteCount), true)
+	result := state
 	copy(c.digest.Words[:], result[:])
 	c.nDraws = frontend.Variable(0)
 }
@@ -145,7 +154,7 @@ func (c *Blake2sChannel) MixU64(value frontend.Variable) {
 }
 
 // DrawRandomWords draws 8 random 32-bit words from the channel.
-// Uses BLAKE2S_256_INITIAL_STATE, includes digest and counter, byte_count = 37.
+// Uses BLAKE2S_256_INITIAL_STATE, includes digest and counter.
 func (c *Blake2sChannel) DrawRandomWords() [8]frontend.Variable {
 	// Create message: [digest[0..7], counter, 0, 0, 0, 0, 0, 0, 0]
 	var msg [16]frontend.Variable
@@ -157,7 +166,10 @@ func (c *Blake2sChannel) DrawRandomWords() [8]frontend.Variable {
 		msg[i] = frontend.Variable(0)
 	}
 
-	// Finalize with byte_count = 37 (32 for digest + 4 for counter + 1 zero byte for domain separation)
+	// Finalize with byte_count = 37 (32 for digest + 4 for counter + 1 for domain separation)
+	// This matches stwo's draw_u32s: digest || n_draws.to_le_bytes() || 0x00
+	// The trailing zero byte is for domain separation between generating randomness
+	// and mixing a single u32. See: stwo/src/core/channel/blake2s.rs draw_u32s()
 	result := c.chip.Blake2sFinalize(msg, 37)
 
 	// Increment draw counter
@@ -167,11 +179,19 @@ func (c *Blake2sChannel) DrawRandomWords() [8]frontend.Variable {
 }
 
 // DrawSecureFelt draws a random QM31 field element from the channel.
-// This uses rejection sampling to ensure uniform distribution.
+//
+// NOTE ON REJECTION SAMPLING:
+// The stwo prover uses rejection sampling in draw_base_felts (blake2s.rs lines 30-52):
+// it retries if any u32 value is >= 2*P (probability ~2^(-28) per draw).
+// This circuit does NOT implement rejection sampling because:
+// 1. Circuit constraints must be fixed at compile time
+// 2. Rejection probability is extremely low (~2^(-28))
+//
+// If a proof was generated with a retry (extremely rare), this verifier will
+// reject it because the channel transcript will diverge. For production use
+// with very high security requirements, consider implementing hint-based
+// retry counting, though this is likely unnecessary in practice.
 func (c *Blake2sChannel) DrawSecureFelt() mersenne31.QM31Variable {
-	// Use hint to get the QM31 value and number of retries needed
-	// The hint computes the values, we verify them in circuit
-
 	words := c.DrawRandomWords()
 
 	// Convert first 4 words to M31 elements
@@ -216,83 +236,90 @@ func (c *Blake2sChannel) reduceU32ToM31(x frontend.Variable) mersenne31.M31Varia
 	return c.m31Chip.ReduceSlow(reduced)
 }
 
-// DrawSecureM31 draws a random M31 field element from the channel.
-func (c *Blake2sChannel) DrawSecureM31() mersenne31.M31Variable {
-	words := c.DrawRandomWords()
-	return c.reduceU32ToM31(words[0])
-}
-
 // DrawU32s draws 8 random 32-bit unsigned integers from the channel.
 func (c *Blake2sChannel) DrawU32s() [8]frontend.Variable {
 	return c.DrawRandomWords()
 }
 
-// POW_PREFIX is the prefix used in PoW verification.
-const POW_PREFIX = 0x12345678
-
 // VerifyPowNonce verifies that the proof-of-work nonce is valid.
-// H(H(POW_PREFIX || zeros || digest || n_bits) || nonce) has n_bits leading zeros.
+// Matches stwo's two-step PoW algorithm (core/channel/blake2s.rs):
+//  1. prefixed_digest = H(POW_PREFIX || [0; 12] || digest || n_bits)
+//  2. result = H(prefixed_digest || nonce)
+//  3. Check result has nBits trailing zeros
+//
+// IMPORTANT: This does NOT modify the channel state. The caller must call
+// MixU64(nonce) separately after verification if needed.
 func (c *Blake2sChannel) VerifyPowNonce(nBits int, nonce frontend.Variable) {
-	// Step 1: Compute first hash H(POW_PREFIX || zeros || digest || n_bits)
-	// Message format: [POW_PREFIX, 0, 0, 0, d0, d1, d2, d3, d4, d5, d6, d7, n_bits, 0, 0, 0]
-	var msg1 [16]frontend.Variable
-	msg1[0] = frontend.Variable(POW_PREFIX)
-	msg1[1] = frontend.Variable(0)
-	msg1[2] = frontend.Variable(0)
-	msg1[3] = frontend.Variable(0)
-	// Copy digest
+	// POW_PREFIX = 0x12345678 (constant from stwo)
+	const POW_PREFIX = uint32(0x12345678)
+
+	// Step 1: Compute prefixed_digest = H(POW_PREFIX || [0; 12] || digest || n_bits)
+	// Layout (52 bytes = 13 words):
+	//   words[0] = POW_PREFIX (4 bytes)
+	//   words[1..3] = [0; 12] (12 bytes = 3 words)
+	//   words[4..11] = digest (32 bytes = 8 words)
+	//   words[12] = n_bits (4 bytes)
+	// Total = 52 bytes, padded to 16 words
+	var prefixMsg [16]frontend.Variable
+	prefixMsg[0] = frontend.Variable(POW_PREFIX)
+	prefixMsg[1] = frontend.Variable(0) // padding zeros
+	prefixMsg[2] = frontend.Variable(0)
+	prefixMsg[3] = frontend.Variable(0)
 	for i := 0; i < 8; i++ {
-		msg1[4+i] = c.digest.Words[i]
+		prefixMsg[4+i] = c.digest.Words[i]
 	}
-	msg1[12] = frontend.Variable(nBits)
-	msg1[13] = frontend.Variable(0)
-	msg1[14] = frontend.Variable(0)
-	msg1[15] = frontend.Variable(0)
+	prefixMsg[12] = frontend.Variable(nBits)
+	for i := 13; i < 16; i++ {
+		prefixMsg[i] = frontend.Variable(0)
+	}
 
-	// Hash with byte_count = 52 (13 words * 4 bytes)
-	firstHash := c.chip.Blake2sFinalize(msg1, 52)
+	// Compute prefixed_digest with byte_count = 52 (4 + 12 + 32 + 4)
+	prefixedDigest := c.chip.Blake2sFinalize(prefixMsg, 52)
 
-	// Step 2: Compute second hash H(first_hash || nonce_lo || nonce_hi || zeros)
-	bits := c.api.ToBinary(nonce, 64)
-	nonceLo := c.api.FromBinary(bits[:32]...)
-	nonceHi := c.api.FromBinary(bits[32:]...)
+	// Step 2: Compute result = H(prefixed_digest || nonce)
+	// Split nonce into two 32-bit words (low, high)
+	nonceBits := c.api.ToBinary(nonce, 64)
+	nonceLow := c.api.FromBinary(nonceBits[:32]...)
+	nonceHigh := c.api.FromBinary(nonceBits[32:]...)
 
-	var msg2 [16]frontend.Variable
+	// Message: prefixed_digest(8 words) + nonce_lo(1) + nonce_hi(1) + padding(6) = 16 words
+	var msg [16]frontend.Variable
 	for i := 0; i < 8; i++ {
-		msg2[i] = firstHash[i]
+		msg[i] = prefixedDigest[i]
 	}
-	msg2[8] = nonceLo
-	msg2[9] = nonceHi
+	msg[8] = nonceLow
+	msg[9] = nonceHigh
 	for i := 10; i < 16; i++ {
-		msg2[i] = frontend.Variable(0)
+		msg[i] = frontend.Variable(0)
 	}
 
-	// Hash with byte_count = 40 (8 words from first hash + 2 nonce words = 10 words * 4 bytes)
-	finalHash := c.chip.Blake2sFinalize(msg2, 40)
+	// Finalize with byte_count = 40 (32 for prefixed_digest + 8 for nonce)
+	result := c.chip.Blake2sFinalize(msg, 40)
 
-	// Step 3: Check that hash has nBits TRAILING zeros (not leading!)
-	// The Rust stwo code interprets the first 128 bits as little-endian and counts trailing zeros.
-	// For nBits <= 32, this means the low nBits of hash[0] must be 0.
-	// In circuit: (hash[0] & ((1 << nBits) - 1)) == 0
-	// Which is equivalent to: hash[0] % (1 << nBits) == 0
+	// Step 3: Check that result has nBits TRAILING zeros.
+	// The stwo code interprets the first 128 bits as little-endian and counts trailing zeros.
+	// For nBits <= 32, this means the low nBits of result[0] must be 0.
+	// For 32 < nBits <= 64, result[0] must be 0 and low (nBits-32) of result[1] must be 0.
 	if nBits > 0 && nBits <= 32 {
 		// Extract the low nBits and assert they are all zero
-		bits := c.api.ToBinary(finalHash[0], 32)
+		hashBits := c.api.ToBinary(result[0], 32)
 		for i := 0; i < nBits; i++ {
-			c.api.AssertIsEqual(bits[i], 0)
+			c.api.AssertIsEqual(hashBits[i], 0)
+		}
+	} else if nBits > 32 && nBits <= 64 {
+		// result[0] must be completely zero
+		c.api.AssertIsEqual(result[0], 0)
+		// Low (nBits - 32) bits of result[1] must be zero
+		hashBits := c.api.ToBinary(result[1], 32)
+		for i := 0; i < nBits-32; i++ {
+			c.api.AssertIsEqual(hashBits[i], 0)
 		}
 	}
 }
 
-// GetDigest returns the current channel digest.
+// GetDigest returns the current channel digest for testing/debugging.
 func (c *Blake2sChannel) GetDigest() blake2s.Blake2sHash {
 	return c.digest
-}
-
-// SetDigest sets the channel digest (for testing or resuming).
-func (c *Blake2sChannel) SetDigest(digest blake2s.Blake2sHash) {
-	c.digest = digest
-	c.nDraws = frontend.Variable(0)
 }
 
 // DrawSecureFeltHint computes a secure QM31 draw using rejection sampling.
@@ -305,33 +332,6 @@ func DrawSecureFeltHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error
 		val := new(big.Int).Set(inputs[i])
 		// Reduce mod p
 		results[i] = val.Mod(val, p)
-	}
-
-	return nil
-}
-
-// VerifyPowHint verifies proof-of-work (helper for complex verification).
-func VerifyPowHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
-	if len(inputs) != 2 {
-		panic("VerifyPowHint expects 2 inputs")
-	}
-
-	hashWord := inputs[0]
-	nBits := inputs[1].Int64()
-
-	// Check that hashWord has nBits leading zeros
-	// hashWord >> (32 - nBits) should be 0
-	if nBits > 32 {
-		nBits = 32
-	}
-
-	shift := 32 - nBits
-	threshold := new(big.Int).Lsh(big.NewInt(1), uint(shift))
-
-	if hashWord.Cmp(threshold) >= 0 {
-		results[0] = big.NewInt(0) // Invalid
-	} else {
-		results[0] = big.NewInt(1) // Valid
 	}
 
 	return nil
