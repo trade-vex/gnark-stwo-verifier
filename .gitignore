@@ -6,9 +6,14 @@
 
 # Compiled binaries
 stwo-verifier
+groth16-cli
+groth16
 
 # Witness files (generated)
-witness*.json
+**/witness*.json
+
+# Test binaries
+**/*.test
 
 # Rust build artifacts
 rust/target/
@@ -24,3 +29,8 @@ build*/
 
 # OS
 .DS_Store
+
+**/*.json
+**/bin
+**/*-cli
+**/*.log
