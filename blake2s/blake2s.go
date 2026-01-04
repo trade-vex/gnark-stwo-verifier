@@ -2,10 +2,7 @@
 package blake2s
 
 import (
-	"encoding/binary"
-
 	"github.com/consensys/gnark/frontend"
-	"golang.org/x/crypto/blake2s"
 )
 
 // Blake2sHash represents a 256-bit Blake2s hash output.
@@ -36,15 +33,6 @@ func ZeroHash() Blake2sHash {
 	var h Blake2sHash
 	for i := 0; i < 8; i++ {
 		h.Words[i] = frontend.Variable(0)
-	}
-	return h
-}
-
-// NewHashFromConstants creates a Blake2sHash from uint32 constants.
-func NewHashFromConstants(values [8]uint32) Blake2sHash {
-	var h Blake2sHash
-	for i := 0; i < 8; i++ {
-		h.Words[i] = frontend.Variable(values[i])
 	}
 	return h
 }
@@ -179,59 +167,6 @@ func (c *Blake2sChip) rotr32(x frontend.Variable, n int) frontend.Variable {
 	return c.api.FromBinary(rotatedBits...)
 }
 
-// Hash computes the Blake2s hash of an arbitrary-length message.
-// The message is padded with zeros to a multiple of 64 bytes.
-func (c *Blake2sChip) Hash(msg []frontend.Variable) Blake2sHash {
-	// Initialize state with IV
-	var state [8]frontend.Variable
-	for i := 0; i < 8; i++ {
-		state[i] = frontend.Variable(IV[i])
-	}
-
-	msgLen := len(msg)
-	numBlocks := (msgLen + BlockWords - 1) / BlockWords
-	if numBlocks == 0 {
-		numBlocks = 1
-	}
-
-	bytesProcessed := uint64(0)
-
-	for blockIdx := 0; blockIdx < numBlocks; blockIdx++ {
-		// Prepare message block
-		var block [16]frontend.Variable
-		for i := 0; i < 16; i++ {
-			wordIdx := blockIdx*16 + i
-			if wordIdx < msgLen {
-				block[i] = msg[wordIdx]
-			} else {
-				block[i] = frontend.Variable(0)
-			}
-		}
-
-		// Update byte counter
-		bytesInBlock := 64
-		if blockIdx == numBlocks-1 {
-			// Last block: count only actual bytes
-			remainingWords := msgLen - blockIdx*16
-			if remainingWords > 0 {
-				bytesInBlock = remainingWords * 4
-			}
-		}
-		bytesProcessed += uint64(bytesInBlock)
-
-		tLow := frontend.Variable(bytesProcessed & 0xFFFFFFFF)
-		tHigh := frontend.Variable(bytesProcessed >> 32)
-
-		isFinal := blockIdx == numBlocks-1
-
-		state = c.Compress(state, block, tLow, tHigh, isFinal)
-	}
-
-	var result Blake2sHash
-	copy(result.Words[:], state[:])
-	return result
-}
-
 // CompressWithState performs compression with a custom initial state.
 // Used for Merkle tree hashing with domain separation.
 func (c *Blake2sChip) CompressWithState(
@@ -245,10 +180,14 @@ func (c *Blake2sChip) CompressWithState(
 	return c.Compress(initialState, msg, tLow, tHigh, final)
 }
 
-// HashLeaf hashes a leaf node in the Merkle tree using domain-separated state.
+// HashLeaf hashes a leaf node in the Merkle tree (column values only, no children).
+// Uses LeafInitialState which is the state after compressing the 64-byte LEAF_PREFIX.
+// This matches stwo's hash_node(None, column_values) = Blake2s(LEAF_PREFIX || values).
 func (c *Blake2sChip) HashLeaf(data []frontend.Variable) Blake2sHash {
 	var state [8]frontend.Variable
 	for i := 0; i < 8; i++ {
+		// LeafInitialState = result of Compress(IV, LEAF_PREFIX, 64, false)
+		// where LEAF_PREFIX = "leaf" + 60 zero bytes
 		state[i] = frontend.Variable(LeafInitialState[i])
 	}
 
@@ -262,7 +201,7 @@ func (c *Blake2sChip) HashLeaf(data []frontend.Variable) Blake2sHash {
 		}
 	}
 
-	// byteCount = 64 (prefix bytes already processed in LeafInitialState) + actual data bytes
+	// byteCount = 64 (prefix) + actual data bytes (4 bytes per M31 value)
 	byteCount := uint64(64 + len(data)*4)
 	state = c.CompressWithState(state, block, byteCount, true)
 
@@ -272,10 +211,14 @@ func (c *Blake2sChip) HashLeaf(data []frontend.Variable) Blake2sHash {
 }
 
 // HashNode hashes an internal node in the Merkle tree.
-// Combines two child hashes into a parent hash.
+// Combines two child hashes into a parent hash (no column values at internal layers).
+// Uses NodeInitialState which is the state after compressing the 64-byte NODE_PREFIX.
+// This matches stwo's hash_node(Some(left, right), []) = Blake2s(NODE_PREFIX || left || right).
 func (c *Blake2sChip) HashNode(left, right Blake2sHash) Blake2sHash {
 	var state [8]frontend.Variable
 	for i := 0; i < 8; i++ {
+		// NodeInitialState = result of Compress(IV, NODE_PREFIX, 64, false)
+		// where NODE_PREFIX = "node" + 60 zero bytes
 		state[i] = frontend.Variable(NodeInitialState[i])
 	}
 
@@ -286,7 +229,7 @@ func (c *Blake2sChip) HashNode(left, right Blake2sHash) Blake2sHash {
 		block[8+i] = right.Words[i]
 	}
 
-	// byteCount = 64 (prefix bytes already processed in NodeInitialState) + 64 (child hashes)
+	// byteCount = 64 (prefix) + 64 (left + right hashes) = 128
 	byteCount := uint64(128)
 	state = c.CompressWithState(state, block, byteCount, true)
 
@@ -334,128 +277,3 @@ func (c *Blake2sChip) Blake2sFinalize(msg [16]frontend.Variable, byteCount int) 
 	return c.Compress(state, msg, tLow, tHigh, true)
 }
 
-// ========================================
-// Native (non-circuit) implementations for testing
-// ========================================
-
-// compressNative performs Blake2s compression on native uint32 values.
-func compressNative(state [8]uint32, msg [16]uint32, tLow, tHigh uint32, isLastBlock bool) [8]uint32 {
-	// Initialize working vector
-	var v [16]uint32
-	for i := 0; i < 8; i++ {
-		v[i] = state[i]
-	}
-	for i := 0; i < 8; i++ {
-		v[8+i] = Blake2s256InitialState[i]
-	}
-
-	// Mix in counters
-	v[12] ^= tLow
-	v[13] ^= tHigh
-
-	// Finalization flag
-	if isLastBlock {
-		v[14] ^= 0xFFFFFFFF
-	}
-
-	// 10 rounds
-	for round := 0; round < 10; round++ {
-		sigma := SIGMA[round]
-
-		// Column step
-		v[0], v[4], v[8], v[12] = gNative(v[0], v[4], v[8], v[12], msg[sigma[0]], msg[sigma[1]])
-		v[1], v[5], v[9], v[13] = gNative(v[1], v[5], v[9], v[13], msg[sigma[2]], msg[sigma[3]])
-		v[2], v[6], v[10], v[14] = gNative(v[2], v[6], v[10], v[14], msg[sigma[4]], msg[sigma[5]])
-		v[3], v[7], v[11], v[15] = gNative(v[3], v[7], v[11], v[15], msg[sigma[6]], msg[sigma[7]])
-
-		// Diagonal step
-		v[0], v[5], v[10], v[15] = gNative(v[0], v[5], v[10], v[15], msg[sigma[8]], msg[sigma[9]])
-		v[1], v[6], v[11], v[12] = gNative(v[1], v[6], v[11], v[12], msg[sigma[10]], msg[sigma[11]])
-		v[2], v[7], v[8], v[13] = gNative(v[2], v[7], v[8], v[13], msg[sigma[12]], msg[sigma[13]])
-		v[3], v[4], v[9], v[14] = gNative(v[3], v[4], v[9], v[14], msg[sigma[14]], msg[sigma[15]])
-	}
-
-	// Finalize
-	var result [8]uint32
-	for i := 0; i < 8; i++ {
-		result[i] = state[i] ^ v[i] ^ v[8+i]
-	}
-	return result
-}
-
-// gNative is the Blake2s G mixing function.
-func gNative(a, b, c, d, x, y uint32) (uint32, uint32, uint32, uint32) {
-	a = a + b + x
-	d = rotr32(d^a, 16)
-	c = c + d
-	b = rotr32(b^c, 12)
-	a = a + b + y
-	d = rotr32(d^a, 8)
-	c = c + d
-	b = rotr32(b^c, 7)
-	return a, b, c, d
-}
-
-func rotr32(x uint32, n int) uint32 {
-	return (x >> n) | (x << (32 - n))
-}
-
-// LEAF_PREFIX is "leaf" followed by 60 zeros (64 bytes total)
-var leafPrefix = func() []byte {
-	p := make([]byte, 64)
-	copy(p, []byte("leaf"))
-	return p
-}()
-
-// NODE_PREFIX is "node" followed by 60 zeros (64 bytes total)
-var nodePrefix = func() []byte {
-	p := make([]byte, 64)
-	copy(p, []byte("node"))
-	return p
-}()
-
-// HashLeafNative computes a leaf hash using the standard Blake2s library.
-func HashLeafNative(data []uint32) [8]uint32 {
-	h, _ := blake2s.New256(nil)
-	h.Write(leafPrefix)
-	for _, v := range data {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], v)
-		h.Write(buf[:])
-	}
-	hash := h.Sum(nil)
-
-	var result [8]uint32
-	for i := 0; i < 8; i++ {
-		result[i] = binary.LittleEndian.Uint32(hash[i*4 : i*4+4])
-	}
-	return result
-}
-
-// HashNodeNative computes a node hash using the standard Blake2s library.
-func HashNodeNative(left, right [8]uint32) [8]uint32 {
-	h, _ := blake2s.New256(nil)
-	h.Write(nodePrefix)
-
-	// Write left child hash
-	for i := 0; i < 8; i++ {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], left[i])
-		h.Write(buf[:])
-	}
-
-	// Write right child hash
-	for i := 0; i < 8; i++ {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], right[i])
-		h.Write(buf[:])
-	}
-
-	hash := h.Sum(nil)
-
-	var result [8]uint32
-	for i := 0; i < 8; i++ {
-		result[i] = binary.LittleEndian.Uint32(hash[i*4 : i*4+4])
-	}
-	return result
-}
