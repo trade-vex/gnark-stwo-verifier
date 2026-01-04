@@ -30,7 +30,7 @@ build*/
 # OS
 .DS_Store
 
-**/*.json
-**/bin
-**/*-cli
-**/*.log
+/*.json
+bin
+*-cli
+*.log
